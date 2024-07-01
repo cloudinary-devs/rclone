@@ -25,16 +25,15 @@ To use this backend, you need to [create a free account](https://cloudinary.com/
 
 `security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)`
 
-* Add the retreival instruction to your .zprofile / .profile
+* Add the retrieval instruction to your .zprofile / .profile
 
-`export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w" `
+`export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"`
 
 ### Linux
 
 * Prerequisite
 
-Linux doesn't come with a default password manager. Let's install
-Install the "pass" utility using a package manager, e.g. apt install pass, yum install pass, [etc.](https://www.passwordstore.org/#download);
+Linux doesn't come with a default password manager. Let's install the "pass" utility using a package manager, e.g. `apt install pass`, `yum install pass`, [etc.](https://www.passwordstore.org/#download);
 then initialize a password store:
 
 `pass init rclone`
@@ -43,7 +42,7 @@ then initialize a password store:
 
 `echo $(openssl rand -base64 40) | pass insert -m rclone/config`
 
-* Add the retreival instruction
+* Add the retrieval instruction
 
 `export RCLONE_PASSWORD_COMMAND="pass rclone/config"`
 
@@ -53,7 +52,7 @@ then initialize a password store:
 
 `New-Object -TypeName PSCredential -ArgumentList "rclone", (ConvertTo-SecureString -String ([System.Web.Security.Membership]::GeneratePassword(40, 10)) -AsPlainText -Force) | Export-Clixml -Path "rclone-credential.xml"`
 
-* Add the password retreival instruction
+* Add the password retrieval instruction
 
 `[Environment]::SetEnvironmentVariable("RCLONE_PASSWORD_COMMAND", "[System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR((Import-Clixml -Path "rclone-credential.xml").Password))")`
 
@@ -71,7 +70,7 @@ Now run
 
 Follow the interactive setup process:
 
-```
+```text
 No remotes found, make a new one?
 n) New remote
 s) Set configuration password
@@ -90,6 +89,11 @@ XX / cloudinary.com
 [snip]
 Storage> cloudinary
 
+Option cloud_name.
+You can find your cloudinary.com cloud_name in your [dashboard](https://console.cloudinary.com/pm/developer-dashboard)
+Enter a value.
+cloud_name> ****************************
+
 Option api_key.
 You can find your cloudinary.com api key in your [dashboard](https://console.cloudinary.com/pm/developer-dashboard)
 Enter a value.
@@ -97,13 +101,15 @@ api_key> ****************************
 
 Option api_secret.
 You can find your cloudinary.com api secret in your [dashboard](https://console.cloudinary.com/pm/developer-dashboard)
+This value must be a single character, one of the following: y, g.
+y/g> y
 Enter a value.
 api_secret> ****************************
 
-Option cloud_name.
-You can find your cloudinary.com api secret in your [dashboard](https://console.cloudinary.com/pm/developer-dashboard)
+Option upload_preset.
+[Upload presets](https://cloudinary.com/documentation/upload_presets) can be defined for different upload profiles
 Enter a value.
-cloud_name> ****************************
+upload_preset>
 
 Edit advanced config?
 y) Yes
@@ -116,6 +122,7 @@ Options:
 - api_key: ****************************
 - api_secret: ****************************
 - cloud_name: ****************************
+- upload_preset:
 
 Keep this "cloudinary-media-library" remote?
 y) Yes this is OK (default)
