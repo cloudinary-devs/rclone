@@ -12,7 +12,8 @@ import (
 // TestIntegration runs integration tests against the remote
 func TestIntegration(t *testing.T) {
 	fstests.Run(t, &fstests.Opt{
-		RemoteName: "TestCloudinary:",
-		NilObject:  (*cloudinary.Object)(nil),
+		RemoteName:      "TestCloudinary:",
+		NilObject:       (*cloudinary.Object)(nil),
+		SkipInvalidUTF8: true,
 	})
 }

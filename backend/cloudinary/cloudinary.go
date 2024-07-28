@@ -15,10 +15,11 @@ import (
 	"github.com/cloudinary/cloudinary-go/v2/api/admin/search"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/hash"
-	"github.com/rclone/rclone/lib/pacer"
+	"github.com/rclone/rclone/lib/encoder"
 )
 
 // Register with Fs
@@ -48,6 +49,15 @@ func init() {
 				Name: "upload_preset",
 				Help: "Upload Preset to use for upload",
 			},
+			{
+				Name:     config.ConfigEncoding,
+				Help:     config.ConfigEncodingHelp,
+				Advanced: true,
+				Default: (encoder.Base |
+					encoder.EncodeInvalidUtf8 |
+					encoder.EncodeSlash |
+					encoder.EncodeRightSpace),
+			},
 		},
 	})
 }
@@ -66,7 +76,6 @@ type Fs struct {
 	root     string
 	opt      Options
 	features *fs.Features
-	pacer    *pacer.Pacer
 	cld      *cloudinary.Cloudinary
 }
 
@@ -282,6 +291,9 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		AssetFolder:  path.Join(f.Root(), path.Dir(src.Remote())),
 		DisplayName:  path.Base(src.Remote()),
 		UploadPreset: f.opt.UploadPreset,
+	}
+	if src.Size() == 0 {
+		return nil, fs.ErrorCantUploadEmptyFiles
 	}
 	uploadResult, err := f.cld.Upload.Upload(ctx, in, params)
 	if err != nil {

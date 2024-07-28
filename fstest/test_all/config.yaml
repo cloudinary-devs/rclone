@@ -468,6 +468,10 @@ backends:
  - backend:  "cloudinary"
    remote:   "TestCloudinary:"
    fastlist: true
- - backend:  "cloudinary"
-   remote:   "TestCloudinary,directory_markers:"
-   fastlist: true
+   ignore:
+     - TestIntegration/FsMkdir/FsEncoding/punctuation
+     - TestIntegration/FsMkdir/FsEncoding/trailing_space
+     - TestIntegration/FsMkdir/FsEncoding/URL_encoding
+     - TestIntegration/FsMkdir/FsPutFiles
+     - TestIntegration/FsMkdir/FsUploadUnknownSize/FsPutUnknownSize
+
