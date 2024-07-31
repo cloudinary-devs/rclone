@@ -22,6 +22,38 @@ import (
 	"github.com/rclone/rclone/lib/encoder"
 )
 
+// Extend the built-in eccoder
+type CloudinaryEncoder interface {
+	// FromStandardPath takes a / separated path in Standard encoding
+	// and converts it to a / separated path in this encoding.
+	FromStandardPath(string) string
+	// FromStandardName takes name in Standard encoding and converts
+	// it in this encoding.
+	FromStandardName(string) string
+	// ToStandardPath takes a / separated path in this encoding
+	// and converts it to a / separated path in Standard encoding.
+	ToStandardPath(string) string
+	// ToStandardName takes name in this encoding and converts
+	// it in Standard encoding.
+	ToStandardName(string) string
+}
+
+func (f *Fs) FromStandardPath(s string) string {
+	return strings.Replace(f.opt.Enc.FromStandardPath(s), "&", "\uFF06", -1)
+}
+
+func (f *Fs) FromStandardName(s string) string {
+	return strings.Replace(f.opt.Enc.FromStandardName(s), "&", "\uFF06", -1)
+}
+
+func (f *Fs) ToStandardPath(s string) string {
+	return strings.Replace(f.opt.Enc.ToStandardPath(s), "\uFF06", "&", -1)
+}
+
+func (f *Fs) ToStandardName(s string) string {
+	return strings.Replace(f.opt.Enc.ToStandardName(s), "\uFF06", "&", -1)
+}
+
 // Register with Fs
 func init() {
 	fs.Register(&fs.RegInfo{
@@ -31,7 +63,7 @@ func init() {
 		Options: []fs.Option{
 			{
 				Name:     "cloud_name",
-				Help:     "Cloudinary Cloud Name",
+				Help:     "Cloudinary Environment Name",
 				Required: true,
 			},
 			{
@@ -47,16 +79,34 @@ func init() {
 			},
 			{
 				Name: "upload_preset",
-				Help: "Upload Preset to use for upload",
+				Help: "Upload Preset to select asset manipulation on upload",
 			},
 			{
 				Name:     config.ConfigEncoding,
 				Help:     config.ConfigEncodingHelp,
 				Advanced: true,
-				Default: (encoder.Base |
-					encoder.EncodeInvalidUtf8 |
+				// !\"#$%&'()*+,-.／:;<=>?@[\\]^_`{|}~
+				// !＂＃＄％&＇()＊+,-.／：；＜=＞？@［＼］^_｀{｜}~
+				Default: (encoder.Base | // Slash,LtGt,DoubleQuote,SingleQuote,BackQuote,Dollar,Question,Asterisk,Pipe,Hash,Percent,BackSlash,Del,Ctl,RightSpace,InvalidUtf8,Dot,SquareBracket,Colon,Semicolon
 					encoder.EncodeSlash |
-					encoder.EncodeRightSpace),
+					encoder.EncodeDoubleQuote |
+					encoder.EncodeDollar |
+					encoder.EncodeQuestion |
+					encoder.EncodePipe |
+					encoder.EncodeHash |
+					encoder.EncodePercent |
+					encoder.EncodeDel |
+					encoder.EncodeCtl |
+					encoder.EncodeRightSpace |
+					encoder.EncodeInvalidUtf8 |
+					encoder.EncodeDot |
+					encoder.EncodeSquareBracket),
+			},
+			{
+				Name:     "optimistic_search",
+				Default:  false,
+				Advanced: true,
+				Help:     "Assume the asset is there so will retry Search",
 			},
 		},
 	})
@@ -64,10 +114,12 @@ func init() {
 
 // Options defines the configuration for this backend
 type Options struct {
-	CloudName    string `config:"cloud_name"`
-	APIKey       string `config:"api_key"`
-	APISecret    string `config:"api_secret"`
-	UploadPreset string `config:"upload_preset"`
+	CloudName        string               `config:"cloud_name"`
+	APIKey           string               `config:"api_key"`
+	APISecret        string               `config:"api_secret"`
+	UploadPreset     string               `config:"upload_preset"`
+	Enc              encoder.MultiEncoder `config:"encoding"`
+	OptimisticSearch bool                 `config:"optimistic_search"`
 }
 
 // Fs represents a remote cloudinary server
@@ -155,7 +207,7 @@ func (f *Fs) Features() *fs.Features {
 
 // List the objects and directories in dir into entries.
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
-	remotePrefix := path.Join(f.root, dir)
+	remotePrefix := path.Join(f.root, CloudinaryEncoder.FromStandardPath(f, dir))
 	if remotePrefix != "" && !strings.HasSuffix(remotePrefix, "/") {
 		remotePrefix += "/"
 	}
@@ -176,18 +228,18 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 
 		results, err := f.cld.Admin.SubFolders(ctx, folderParams)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list subfolders: %w", err)
+			return nil, fmt.Errorf("failed to list sub-folders: %w", err)
 		}
 		if results.Error.Message != "" {
 			if strings.HasPrefix(results.Error.Message, "Can't find folder with path") {
 				return nil, fs.ErrorDirNotFound
 			}
 
-			return nil, fmt.Errorf("failed to list subfolders: %s", results.Error.Message)
+			return nil, fmt.Errorf("failed to list sub-folders: %s", results.Error.Message)
 		}
 
 		for _, folder := range results.Folders {
-			relativePath := strings.TrimPrefix(folder.Path, remotePrefix)
+			relativePath := strings.TrimPrefix(CloudinaryEncoder.ToStandardPath(f, folder.Path), remotePrefix)
 			parts := strings.Split(relativePath, "/")
 
 			// It's a directory
@@ -221,9 +273,9 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		}
 
 		for _, asset := range results.Assets {
-			remote := asset.DisplayName
+			remote := CloudinaryEncoder.ToStandardName(f, asset.DisplayName)
 			if dir != "" {
-				remote = path.Join(dir, asset.DisplayName)
+				remote = path.Join(dir, CloudinaryEncoder.ToStandardName(f, asset.DisplayName))
 			}
 			o := &Object{
 				fs:      f,
@@ -246,20 +298,25 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 }
 
 // getCLDAsset finds the asset at Cloudinary. If it can't be found it returns the error fs.ErrorObjectNotFound.
-func (f *Fs) getCLDAsset(ctx context.Context, remote string) (*admin.SearchAsset, error) {
+func (f *Fs) getCLDAsset(ctx context.Context, remote string, retry int8) (*admin.SearchAsset, error) {
 	// Use the Search API to get the specific asset by display name and asset folder
 	searchParams := search.Query{
 		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
-			strings.TrimLeft(path.Join(f.root, path.Dir(remote)), "/"),
-			path.Base(remote)),
+			strings.TrimLeft(path.Join(CloudinaryEncoder.FromStandardPath(f, f.root), CloudinaryEncoder.FromStandardPath(f, path.Dir(remote))), "/"),
+			CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
 		MaxResults: 1,
 	}
 	results, err := f.cld.Admin.Search(ctx, searchParams)
+	if f.opt.OptimisticSearch && len(results.Assets) == 0 && retry < 3 {
+		time.Sleep(1 * time.Second)
+		ret1, ret2 := f.getCLDAsset(ctx, remote, retry+1)
+		return ret1, ret2
+	}
 	if err != nil || len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
 
-	if len(results.Assets) > 1 {
+	if results.NextCursor != "" {
 		return nil, errors.New("duplicate objects found")
 	}
 
@@ -268,7 +325,7 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string) (*admin.SearchAsset
 
 // NewObject finds the Object at remote. If it can't be found it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	asset, err := f.getCLDAsset(ctx, remote)
+	asset, err := f.getCLDAsset(ctx, remote, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -288,8 +345,8 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 // Put uploads content to Cloudinary
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
 	params := uploader.UploadParams{
-		AssetFolder:  path.Join(f.Root(), path.Dir(src.Remote())),
-		DisplayName:  path.Base(src.Remote()),
+		AssetFolder:  path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardName(f, path.Dir(src.Remote()))),
+		DisplayName:  CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
 		UploadPreset: f.opt.UploadPreset,
 	}
 	if src.Size() == 0 {
@@ -299,7 +356,6 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
 	}
-
 	if uploadResult.Error.Message != "" {
 		return nil, fmt.Errorf(uploadResult.Error.Message)
 	}
@@ -311,7 +367,6 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		modTime: uploadResult.CreatedAt,
 		url:     uploadResult.SecureURL,
 	}
-
 	return o, nil
 }
 
@@ -326,7 +381,7 @@ func (f *Fs) Hashes() hash.Set {
 }
 
 func (f *Fs) Mkdir(ctx context.Context, dir string) error {
-	params := admin.CreateFolderParams{Folder: path.Join(f.Root(), dir)}
+	params := admin.CreateFolderParams{Folder: path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardPath(f, dir))}
 	res, err := f.cld.Admin.CreateFolder(ctx, params)
 	if err != nil {
 		return err
@@ -339,7 +394,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 }
 
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	params := admin.DeleteFolderParams{Folder: path.Join(f.Root(), dir)}
+	params := admin.DeleteFolderParams{Folder: path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardPath(f, dir))}
 	res, err := f.cld.Admin.DeleteFolder(ctx, params)
 	if err != nil {
 		return err
@@ -356,7 +411,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 }
 
 func (f *Fs) Remove(ctx context.Context, o fs.Object) error {
-	asset, err := f.getCLDAsset(ctx, o.Remote())
+	asset, err := f.getCLDAsset(ctx, o.Remote(), 0)
 	if err != nil {
 		return err
 	}
