@@ -308,9 +308,8 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string, retry int8) (*admin
 	}
 	results, err := f.cld.Admin.Search(ctx, searchParams)
 	if f.opt.OptimisticSearch && len(results.Assets) == 0 && retry < 3 {
-		time.Sleep(1 * time.Second)
-		ret1, ret2 := f.getCLDAsset(ctx, remote, retry+1)
-		return ret1, ret2
+		time.Sleep(10 * time.Second)
+		return f.getCLDAsset(ctx, remote, retry+1)
 	}
 	if err != nil || len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
