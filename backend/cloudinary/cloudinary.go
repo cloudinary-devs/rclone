@@ -54,6 +54,18 @@ func (f *Fs) ToStandardName(s string) string {
 	return strings.Replace(f.opt.Enc.ToStandardName(s), "\uFF06", "&", -1)
 }
 
+// Cloudinary shouldn't have a trailing dot if there is no path
+func cldPathDir(somePath string) string {
+	if somePath == "" || somePath == "." {
+		return somePath
+	}
+	dir := path.Dir(somePath)
+	if dir == "." {
+		return ""
+	}
+	return dir
+}
+
 // Register with Fs
 func init() {
 	fs.Register(&fs.RegInfo{
@@ -239,7 +251,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		}
 
 		for _, folder := range results.Folders {
-			relativePath := strings.TrimPrefix(CloudinaryEncoder.ToStandardPath(f, folder.Path), remotePrefix)
+			relativePath := CloudinaryEncoder.ToStandardPath(f, strings.TrimPrefix(folder.Path, remotePrefix))
 			parts := strings.Split(relativePath, "/")
 
 			// It's a directory
@@ -302,13 +314,13 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string, retry int8) (*admin
 	// Use the Search API to get the specific asset by display name and asset folder
 	searchParams := search.Query{
 		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
-			strings.TrimLeft(path.Join(CloudinaryEncoder.FromStandardPath(f, f.root), CloudinaryEncoder.FromStandardPath(f, path.Dir(remote))), "/"),
+			strings.TrimLeft(path.Join(CloudinaryEncoder.FromStandardPath(f, f.root), CloudinaryEncoder.FromStandardPath(f, cldPathDir(remote))), "/"),
 			CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
 		MaxResults: 1,
 	}
 	results, err := f.cld.Admin.Search(ctx, searchParams)
 	if f.opt.OptimisticSearch && len(results.Assets) == 0 && retry < 3 {
-		time.Sleep(10 * time.Second)
+		time.Sleep(1 * time.Second)
 		return f.getCLDAsset(ctx, remote, retry+1)
 	}
 	if err != nil || len(results.Assets) == 0 {
@@ -344,8 +356,9 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 // Put uploads content to Cloudinary
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
 	params := uploader.UploadParams{
-		AssetFolder:  path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardName(f, path.Dir(src.Remote()))),
+		AssetFolder:  path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardPath(f, cldPathDir(src.Remote()))),
 		DisplayName:  CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
+		PublicID:     CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
 		UploadPreset: f.opt.UploadPreset,
 	}
 	if src.Size() == 0 {
