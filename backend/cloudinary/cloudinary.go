@@ -364,7 +364,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 }
 
 // getCLDAsset finds the asset at Cloudinary. If it can't be found it returns the error fs.ErrorObjectNotFound.
-func (f *Fs) getCLDAsset(ctx context.Context, remote string, retry int8) (*admin.SearchAsset, error) {
+func (f *Fs) getCLDAsset(ctx context.Context, remote string, tryNum int8) (*admin.SearchAsset, error) {
 	// Use the Search API to get the specific asset by display name and asset folder
 
 	searchParams := search.Query{
@@ -374,16 +374,12 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string, retry int8) (*admin
 		MaxResults: 1,
 	}
 	results, err := f.cld.Admin.Search(ctx, searchParams)
-	if f.opt.OptimisticSearch && len(results.Assets) == 0 && retry < 3 {
+	if f.opt.OptimisticSearch && len(results.Assets) == 0 && tryNum < 3 {
 		time.Sleep(1 * time.Second)
-		return f.getCLDAsset(ctx, remote, retry+1)
+		return f.getCLDAsset(ctx, remote, tryNum+1)
 	}
 	if err != nil || len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
-	}
-
-	if results.NextCursor != "" {
-		return nil, errors.New("duplicate objects found")
 	}
 
 	return &results.Assets[0], nil
@@ -583,6 +579,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		opts.ExtraHeaders = make(map[string]string)
 		opts.ExtraHeaders[key] = value
 	}
+	// Make sure that the HTTP Range header kicks in. It can take some attempts for fresh assets
 	for i := 1; i <= 7; i++ {
 		resp, err = o.fs.srv.Call(ctx, &opts)
 		if err != nil {
