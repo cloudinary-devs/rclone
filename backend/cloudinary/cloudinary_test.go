@@ -13,7 +13,7 @@ import (
 func TestIntegration(t *testing.T) {
 	name := "TestCloudinary"
 	fstests.Run(t, &fstests.Opt{
-		RemoteName:      name,
+		RemoteName:      name + ":",
 		NilObject:       (*cloudinary.Object)(nil),
 		SkipInvalidUTF8: true,
 		ExtraConfig: []fstests.ExtraConfigItem{
