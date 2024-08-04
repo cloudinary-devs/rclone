@@ -150,30 +150,36 @@ type Fs struct {
 
 // Object describes a cloudinary object
 type Object struct {
-	fs      *Fs
-	remote  string
-	size    int64
-	modTime time.Time
-	url     string
-	md5sum  string
+	fs           *Fs
+	remote       string
+	size         int64
+	modTime      time.Time
+	url          string
+	md5sum       string
+	publicID     string
+	resourceType string
+	deliveryType string
 }
 
-type UpdateModeOption struct {
-	UpdateMode bool
+type updateOptions struct {
+	UpdateMode   bool
+	PublicID     string
+	ResourceType string
+	DeliveryType string
 }
 
-func (o *UpdateModeOption) Header() (string, string) {
+func (o *updateOptions) Header() (string, string) {
 	return "UpdateMode", fmt.Sprintf("%v", o.UpdateMode)
 }
 
 // Mandatory returns whether the option must be parsed or can be ignored
-func (o *UpdateModeOption) Mandatory() bool {
+func (o *updateOptions) Mandatory() bool {
 	return false
 }
 
 // String formats the option into human-readable form
-func (o *UpdateModeOption) String() string {
-	return fmt.Sprintf("UpdateModeOption(%v)", o.UpdateMode)
+func (o *updateOptions) String() string {
+	return fmt.Sprintf("updateOptions(%v)", o.UpdateMode)
 }
 
 func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
@@ -335,11 +341,14 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 				remote = path.Join(dir, CloudinaryEncoder.ToStandardName(f, asset.DisplayName))
 			}
 			o := &Object{
-				fs:      f,
-				remote:  remote,
-				size:    int64(asset.Bytes),
-				modTime: asset.CreatedAt,
-				url:     asset.SecureURL,
+				fs:           f,
+				remote:       remote,
+				size:         int64(asset.Bytes),
+				modTime:      asset.CreatedAt,
+				url:          asset.SecureURL,
+				publicID:     asset.PublicID,
+				resourceType: asset.AssetType,
+				deliveryType: asset.Type,
 			}
 			entries = append(entries, o)
 		}
@@ -357,6 +366,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 // getCLDAsset finds the asset at Cloudinary. If it can't be found it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) getCLDAsset(ctx context.Context, remote string, retry int8) (*admin.SearchAsset, error) {
 	// Use the Search API to get the specific asset by display name and asset folder
+
 	searchParams := search.Query{
 		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
 			f.FromStandardFullPath(cldPathDir(remote)),
@@ -387,12 +397,15 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	}
 
 	o := &Object{
-		fs:      f,
-		remote:  remote,
-		size:    int64(asset.Bytes),
-		modTime: asset.UploadedAt,
-		url:     asset.SecureURL,
-		md5sum:  asset.Etag,
+		fs:           f,
+		remote:       remote,
+		size:         int64(asset.Bytes),
+		modTime:      asset.UploadedAt,
+		url:          asset.SecureURL,
+		md5sum:       asset.Etag,
+		publicID:     asset.PublicID,
+		resourceType: asset.ResourceType,
+		deliveryType: asset.Type,
 	}
 
 	return o, nil
@@ -411,14 +424,16 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 
 	for _, option := range options {
-		if updateModeOption, ok := option.(*UpdateModeOption); ok {
-			if updateModeOption.UpdateMode {
+		if updateOptions, ok := option.(*updateOptions); ok {
+			if updateOptions.UpdateMode {
 				params.Overwrite = api.Bool(true)
 				params.Invalidate = api.Bool(true)
+				params.PublicID = updateOptions.PublicID
+				params.ResourceType = updateOptions.ResourceType
+				params.Type = api.DeliveryType(updateOptions.DeliveryType)
 			}
 		}
 	}
-	params.PublicID = path.Join(params.AssetFolder, params.DisplayName)
 	uploadResult, err := f.cld.Upload.Upload(ctx, in, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
@@ -428,12 +443,15 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 
 	o := &Object{
-		fs:      f,
-		remote:  src.Remote(),
-		size:    int64(uploadResult.Bytes),
-		modTime: uploadResult.CreatedAt,
-		url:     uploadResult.SecureURL,
-		md5sum:  uploadResult.Etag,
+		fs:           f,
+		remote:       src.Remote(),
+		size:         int64(uploadResult.Bytes),
+		modTime:      uploadResult.CreatedAt,
+		url:          uploadResult.SecureURL,
+		md5sum:       uploadResult.Etag,
+		publicID:     uploadResult.PublicID,
+		resourceType: uploadResult.ResourceType,
+		deliveryType: uploadResult.Type,
 	}
 	return o, nil
 }
@@ -586,7 +604,12 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 	srcImmutable := object.NewStaticObjectInfo(o.Remote(), src.ModTime(ctx), src.Size(), true, nil, o.Fs())
-	options = append(options, &UpdateModeOption{UpdateMode: true})
+	options = append(options, &updateOptions{
+		UpdateMode:   true,
+		PublicID:     o.publicID,
+		ResourceType: o.resourceType,
+		DeliveryType: o.deliveryType,
+	})
 	updatedObj, err := o.fs.Put(ctx, in, srcImmutable, options...)
 	if err != nil {
 		return err
@@ -596,6 +619,9 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		o.modTime = time.Now() // Skipping uo.modTime because the API returns the create time
 		o.url = uo.url
 		o.md5sum = uo.md5sum
+		o.publicID = uo.publicID
+		o.resourceType = uo.resourceType
+		o.deliveryType = uo.deliveryType
 	}
 	return nil
 }
