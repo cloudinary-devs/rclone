@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cloudinary/cloudinary-go/v2"
+	"github.com/cloudinary/cloudinary-go/v2/api"
 	"github.com/cloudinary/cloudinary-go/v2/api/admin"
 	"github.com/cloudinary/cloudinary-go/v2/api/admin/search"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
@@ -18,8 +20,11 @@ import (
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
+	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/object"
 	"github.com/rclone/rclone/lib/encoder"
+	"github.com/rclone/rclone/lib/rest"
 )
 
 // Extend the built-in eccoder
@@ -97,22 +102,21 @@ func init() {
 				Name:     config.ConfigEncoding,
 				Help:     config.ConfigEncodingHelp,
 				Advanced: true,
-				// !\"#$%&'()*+,-.／:;<=>?@[\\]^_`{|}~
-				// !＂＃＄％&＇()＊+,-.／：；＜=＞？@［＼］^_｀{｜}~
-				Default: (encoder.Base | // Slash,LtGt,DoubleQuote,SingleQuote,BackQuote,Dollar,Question,Asterisk,Pipe,Hash,Percent,BackSlash,Del,Ctl,RightSpace,InvalidUtf8,Dot,SquareBracket,Colon,Semicolon
+				Default: (encoder.Base | //  Slash,LtGt,DoubleQuote,Question,Asterisk,Pipe,Hash,Percent,BackSlash,Del,Ctl,RightSpace,InvalidUtf8,Dot
 					encoder.EncodeSlash |
+					encoder.EncodeLtGt |
 					encoder.EncodeDoubleQuote |
-					encoder.EncodeDollar |
 					encoder.EncodeQuestion |
+					encoder.EncodeAsterisk |
 					encoder.EncodePipe |
 					encoder.EncodeHash |
 					encoder.EncodePercent |
+					encoder.EncodeBackSlash |
 					encoder.EncodeDel |
 					encoder.EncodeCtl |
 					encoder.EncodeRightSpace |
 					encoder.EncodeInvalidUtf8 |
-					encoder.EncodeDot |
-					encoder.EncodeSquareBracket),
+					encoder.EncodeDot),
 			},
 			{
 				Name:     "optimistic_search",
@@ -140,6 +144,7 @@ type Fs struct {
 	root     string
 	opt      Options
 	features *fs.Features
+	srv      *rest.Client // the connection to the server
 	cld      *cloudinary.Cloudinary
 }
 
@@ -151,6 +156,24 @@ type Object struct {
 	modTime time.Time
 	url     string
 	md5sum  string
+}
+
+type UpdateModeOption struct {
+	UpdateMode bool
+}
+
+func (o *UpdateModeOption) Header() (string, string) {
+	return "UpdateMode", fmt.Sprintf("%v", o.UpdateMode)
+}
+
+// Mandatory returns whether the option must be parsed or can be ignored
+func (o *UpdateModeOption) Mandatory() bool {
+	return false
+}
+
+// String formats the option into human-readable form
+func (o *UpdateModeOption) String() string {
+	return fmt.Sprintf("UpdateModeOption(%v)", o.UpdateMode)
 }
 
 func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
@@ -180,12 +203,13 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cloudinary client: %w", err)
 	}
-
+	client := fshttp.NewClient(ctx)
 	f := &Fs{
 		name: name,
 		root: root,
 		opt:  *opt,
 		cld:  cld,
+		srv:  rest.NewClient(client),
 	}
 
 	f.features = (&fs.Features{
@@ -194,6 +218,22 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 		DuplicateFiles:          true,
 	}).Fill(ctx, f)
 
+	if root != "" {
+		// Check to see if the root actually an existing file
+		remote := path.Base(root)
+		f.root = cldPathDir(root)
+		_, err := f.NewObject(ctx, remote)
+		if err != nil {
+			if err == fs.ErrorObjectNotFound || errors.Is(err, fs.ErrorNotAFile) {
+				// File doesn't exist so return old f
+				f.root = root
+				return f, nil
+			}
+			return nil, err
+		}
+		// return an error with an fs which points to the parent
+		return f, fs.ErrorIsFile
+	}
 	return f, nil
 }
 
@@ -205,6 +245,11 @@ func (f *Fs) Name() string {
 // Root of the remote (as passed into NewFs)
 func (f *Fs) Root() string {
 	return f.root
+}
+
+// Encoded root of the remote (as passed into NewFs)
+func (f *Fs) FromStandardFullPath(dir string) string {
+	return path.Join(CloudinaryEncoder.FromStandardPath(f, f.root), CloudinaryEncoder.FromStandardPath(f, dir))
 }
 
 // String converts this Fs to a string
@@ -219,7 +264,7 @@ func (f *Fs) Features() *fs.Features {
 
 // List the objects and directories in dir into entries.
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
-	remotePrefix := path.Join(f.root, CloudinaryEncoder.FromStandardPath(f, dir))
+	remotePrefix := f.FromStandardFullPath(dir)
 	if remotePrefix != "" && !strings.HasSuffix(remotePrefix, "/") {
 		remotePrefix += "/"
 	}
@@ -314,7 +359,7 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string, retry int8) (*admin
 	// Use the Search API to get the specific asset by display name and asset folder
 	searchParams := search.Query{
 		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
-			strings.TrimLeft(path.Join(CloudinaryEncoder.FromStandardPath(f, f.root), CloudinaryEncoder.FromStandardPath(f, cldPathDir(remote))), "/"),
+			f.FromStandardFullPath(cldPathDir(remote)),
 			CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
 		MaxResults: 1,
 	}
@@ -355,15 +400,25 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 
 // Put uploads content to Cloudinary
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	params := uploader.UploadParams{
-		AssetFolder:  path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardPath(f, cldPathDir(src.Remote()))),
-		DisplayName:  CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
-		PublicID:     CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
-		UploadPreset: f.opt.UploadPreset,
-	}
 	if src.Size() == 0 {
 		return nil, fs.ErrorCantUploadEmptyFiles
 	}
+
+	params := uploader.UploadParams{
+		AssetFolder:  f.FromStandardFullPath(cldPathDir(src.Remote())),
+		DisplayName:  CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
+		UploadPreset: f.opt.UploadPreset,
+	}
+
+	for _, option := range options {
+		if updateModeOption, ok := option.(*UpdateModeOption); ok {
+			if updateModeOption.UpdateMode {
+				params.Overwrite = api.Bool(true)
+				params.Invalidate = api.Bool(true)
+			}
+		}
+	}
+	params.PublicID = path.Join(params.AssetFolder, params.DisplayName)
 	uploadResult, err := f.cld.Upload.Upload(ctx, in, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
@@ -378,6 +433,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		size:    int64(uploadResult.Bytes),
 		modTime: uploadResult.CreatedAt,
 		url:     uploadResult.SecureURL,
+		md5sum:  uploadResult.Etag,
 	}
 	return o, nil
 }
@@ -393,7 +449,7 @@ func (f *Fs) Hashes() hash.Set {
 }
 
 func (f *Fs) Mkdir(ctx context.Context, dir string) error {
-	params := admin.CreateFolderParams{Folder: path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardPath(f, dir))}
+	params := admin.CreateFolderParams{Folder: f.FromStandardFullPath(dir)}
 	res, err := f.cld.Admin.CreateFolder(ctx, params)
 	if err != nil {
 		return err
@@ -406,7 +462,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 }
 
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	params := admin.DeleteFolderParams{Folder: path.Join(CloudinaryEncoder.FromStandardPath(f, f.Root()), CloudinaryEncoder.FromStandardPath(f, dir))}
+	params := admin.DeleteFolderParams{Folder: f.FromStandardFullPath(dir)}
 	res, err := f.cld.Admin.DeleteFolder(ctx, params)
 	if err != nil {
 		return err
@@ -474,16 +530,73 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	return fs.ErrorCantSetModTime
 }
 
-func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
-	// Cloudinary assets can be accessed via URL directly
-	resp, err := http.Get(o.url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open Cloudinary object: %w", err)
+// Open an object for read
+func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
+	var resp *http.Response
+	opts := rest.Opts{
+		Method:  "GET",
+		RootURL: o.url,
+		Options: options,
 	}
-	return resp.Body, nil
+	var offset int64
+	var count int64
+	var key string
+	var value string
+	fs.FixRangeOption(options, o.size)
+	for _, option := range options {
+		switch x := option.(type) {
+		case *fs.RangeOption:
+			offset, count = x.Decode(o.size)
+			if count < 0 {
+				count = o.size - offset
+			}
+			key, value = option.Header()
+		case *fs.SeekOption:
+			offset = x.Offset
+			count = o.size - offset
+			key, value = option.Header()
+		default:
+			if option.Mandatory() {
+				fs.Logf(o, "Unsupported mandatory option: %v", option)
+			}
+		}
+	}
+	if key != "" && value != "" {
+		opts.ExtraHeaders = make(map[string]string)
+		opts.ExtraHeaders[key] = value
+	}
+	for i := 1; i <= 7; i++ {
+		resp, err = o.fs.srv.Call(ctx, &opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed download of \"%s\": %w", o.url, err)
+		}
+		if resp.Header.Get("accept-ranges") != "" && resp.Header.Get("content-length") != "" {
+			cl, err := strconv.Atoi(resp.Header.Get("content-length"))
+			if err != nil || int64(cl) != count {
+				time.Sleep(time.Duration(i) * time.Second)
+				continue
+			}
+			break
+		}
+		time.Sleep(time.Duration(i) * time.Second)
+	}
+
+	return resp.Body, err
 }
 
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
+	srcImmutable := object.NewStaticObjectInfo(o.Remote(), src.ModTime(ctx), src.Size(), true, nil, o.Fs())
+	options = append(options, &UpdateModeOption{UpdateMode: true})
+	updatedObj, err := o.fs.Put(ctx, in, srcImmutable, options...)
+	if err != nil {
+		return err
+	}
+	if uo, ok := updatedObj.(*Object); ok {
+		o.size = uo.size
+		o.modTime = time.Now() // Skipping uo.modTime because the API returns the create time
+		o.url = uo.url
+		o.md5sum = uo.md5sum
+	}
 	return nil
 }
 
