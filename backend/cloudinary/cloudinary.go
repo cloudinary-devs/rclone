@@ -2,6 +2,7 @@ package cloudinary
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"github.com/rclone/rclone/fs/object"
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/rest"
+	"github.com/zeebo/blake3"
 )
 
 // Extend the built-in eccoder
@@ -162,14 +164,13 @@ type Object struct {
 }
 
 type updateOptions struct {
-	UpdateMode   bool
 	PublicID     string
 	ResourceType string
 	DeliveryType string
 }
 
 func (o *updateOptions) Header() (string, string) {
-	return "UpdateMode", fmt.Sprintf("%v", o.UpdateMode)
+	return "UpdateOption", fmt.Sprintf("%s/%s/%s", o.ResourceType, o.DeliveryType, o.PublicID)
 }
 
 // Mandatory returns whether the option must be parsed or can be ignored
@@ -179,7 +180,7 @@ func (o *updateOptions) Mandatory() bool {
 
 // String formats the option into human-readable form
 func (o *updateOptions) String() string {
-	return fmt.Sprintf("updateOptions(%v)", o.UpdateMode)
+	return fmt.Sprintf("Fully qualified Public ID: %s/%s/%s", o.ResourceType, o.DeliveryType, o.PublicID)
 }
 
 func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
@@ -231,7 +232,7 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 		_, err := f.NewObject(ctx, remote)
 		if err != nil {
 			if err == fs.ErrorObjectNotFound || errors.Is(err, fs.ErrorNotAFile) {
-				// File doesn't exist so return old f
+				// File doesn't exist so return the previous root
 				f.root = root
 				return f, nil
 			}
@@ -407,6 +408,12 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	return o, nil
 }
 
+func (f *Fs) getSuggestedPublicID(assetFolder string, displayName string, modTime time.Time) string {
+	payload := []byte(path.Join(assetFolder, displayName, strconv.FormatInt(modTime.Unix(), 16)))
+	hash := blake3.Sum256(payload)
+	return hex.EncodeToString(hash[:])
+}
+
 // Put uploads content to Cloudinary
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
 	if src.Size() == 0 {
@@ -419,14 +426,20 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		UploadPreset: f.opt.UploadPreset,
 	}
 
+	// We want to conform to the unique asset ID of rclone, which is (asset_folder,display_name,last_modified).
+	// We also want to enable customers to choose their own public_id, in case duplicate names are not a crucial use case.
+	// Upload_presets that apply randomness to the public ID would not work well with rclone duplicate assets support.
+	params.FilenameOverride = f.getSuggestedPublicID(params.AssetFolder, params.DisplayName, src.ModTime(ctx))
+
 	for _, option := range options {
 		if updateOptions, ok := option.(*updateOptions); ok {
-			if updateOptions.UpdateMode {
+			if updateOptions.PublicID != "" {
 				params.Overwrite = api.Bool(true)
 				params.Invalidate = api.Bool(true)
 				params.PublicID = updateOptions.PublicID
 				params.ResourceType = updateOptions.ResourceType
 				params.Type = api.DeliveryType(updateOptions.DeliveryType)
+				params.FilenameOverride = ""
 			}
 		}
 	}
@@ -451,8 +464,6 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 	return o, nil
 }
-
-// Other required methods (not fully implemented):
 
 func (f *Fs) Precision() time.Duration {
 	return fs.ModTimeNotSupported
@@ -602,7 +613,6 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 	srcImmutable := object.NewStaticObjectInfo(o.Remote(), src.ModTime(ctx), src.Size(), true, nil, o.Fs())
 	options = append(options, &updateOptions{
-		UpdateMode:   true,
 		PublicID:     o.publicID,
 		ResourceType: o.resourceType,
 		DeliveryType: o.deliveryType,
