@@ -126,9 +126,8 @@ func init() {
 			},
 			{
 				Name:     "eventually_consistent_delay",
-				Default:  false,
 				Advanced: true,
-				Help:     "Assume the asset is there so will retry Search",
+				Help:     "Wait N seconds for eventual consistency",
 			},
 		},
 	})
