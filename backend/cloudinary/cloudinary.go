@@ -614,23 +614,21 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		opts.ExtraHeaders = make(map[string]string)
 		opts.ExtraHeaders[key] = value
 	}
-	// Make sure that the HTTP Range header kicks in. It can take some attempts for fresh assets
+	// Make sure that the asset is available
 	for i := 1; i <= 7; i++ {
 		resp, err = o.fs.srv.Call(ctx, &opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed download of \"%s\": %w", o.url, err)
 		}
-		if resp.Header.Get("accept-ranges") != "" && resp.Header.Get("content-length") != "" {
-			cl, err := strconv.Atoi(resp.Header.Get("content-length"))
-			if err != nil || int64(cl) != count {
-				time.Sleep(time.Duration(i) * time.Second)
-				continue
-			}
+		if count == 0 {
+			break
+		}
+		cl, err := strconv.Atoi(resp.Header.Get("content-length"))
+		if err == nil && count == int64(cl) {
 			break
 		}
 		time.Sleep(time.Duration(i) * time.Second)
 	}
-
 	return resp.Body, err
 }
 
