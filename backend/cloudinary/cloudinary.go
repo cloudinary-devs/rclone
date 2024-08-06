@@ -270,6 +270,9 @@ func (f *Fs) FromStandardFullPath(dir string) string {
 
 // Wait till the FS is eventually consistent
 func (f *Fs) WaitEventuallyConsistent() {
+	if f.opt.EventuallyConsistentDelay == "" {
+		return
+	}
 	timeSinceLastCRUD := time.Since(f.lastCRUD)
 	delaySeconds, err := strconv.Atoi(f.opt.EventuallyConsistentDelay)
 	if err != nil {
