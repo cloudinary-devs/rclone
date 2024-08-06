@@ -102,6 +102,12 @@ backends:
    fastlist: true
    maxfile:  1k
  ## end chunker
+ - backend:  "cloudinary"
+   remote:   "TestCloudinary:"
+   fastlist: true
+ - backend:  "cloudinary"
+   remote:   "TestCloudinary:"
+   fastlist: false
  - backend:  "combine"
    remote:   "TestCombine:dir1"
    fastlist: false
@@ -464,10 +470,4 @@ backends:
    fastlist: false
  - backend:  "ulozto"
    remote:   "TestUlozto:"
-   fastlist: false
- - backend:  "cloudinary"
-   remote:   "TestCloudinary:"
-   fastlist: true
- - backend:  "cloudinary"
-   remote:   "TestCloudinary:"
    fastlist: false
