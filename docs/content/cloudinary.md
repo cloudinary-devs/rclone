@@ -4,7 +4,7 @@ description: "Rclone docs for Cloudinary backend"
 versionIntroduced: "v1.0"
 
 ---
-# {{< icon "fa fa-cloud" >}} Cloudinary
+# {{< icon "fa fa-image" >}} Cloudinary
 
 This is a backend for the [Cloudinary](https://cloudinary.com/) platform
 
@@ -27,7 +27,7 @@ To use this backend, you need to [create a free account](https://cloudinary.com/
 
 * Add the retrieval instruction to your .zprofile / .profile
 
-`export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"`
+`echo 'export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"' >> ~/.zprofile`
 
 ### Linux
 
@@ -42,9 +42,9 @@ then initialize a password store:
 
 `echo $(openssl rand -base64 40) | pass insert -m rclone/config`
 
-* Add the retrieval instruction
+* Add the retrieval instruction to your .profile
 
-`export RCLONE_PASSWORD_COMMAND="pass rclone/config"`
+`echo 'export RCLONE_PASSWORD_COMMAND="pass rclone/config"' >> ~/.profile`
 
 ### Windows
 
