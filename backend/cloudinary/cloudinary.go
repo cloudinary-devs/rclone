@@ -614,8 +614,8 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		opts.ExtraHeaders = make(map[string]string)
 		opts.ExtraHeaders[key] = value
 	}
-	// Make sure that the asset is available
-	for i := 1; i <= 7; i++ {
+	// Make sure that the asset is fully available
+	for i := 1; i <= 4; i++ {
 		resp, err = o.fs.srv.Call(ctx, &opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed download of \"%s\": %w", o.url, err)
