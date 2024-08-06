@@ -17,7 +17,7 @@ func TestIntegration(t *testing.T) {
 		NilObject:       (*cloudinary.Object)(nil),
 		SkipInvalidUTF8: true,
 		ExtraConfig: []fstests.ExtraConfigItem{
-			{Name: name, Key: "optimistic_search", Value: "true"},
+			{Name: name, Key: "eventually_consistent_delay", Value: "15"},
 		},
 	})
 }

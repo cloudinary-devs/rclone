@@ -29,7 +29,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-// Extend the built-in eccoder
+// Extend the built-in encoder
 type CloudinaryEncoder interface {
 	// FromStandardPath takes a / separated path in Standard encoding
 	// and converts it to a / separated path in this encoding.
@@ -97,6 +97,10 @@ func init() {
 				IsPassword: true,
 			},
 			{
+				Name: "upload_prefix",
+				Help: "Specify alternative data center",
+			},
+			{
 				Name: "upload_preset",
 				Help: "Upload Preset to select asset manipulation on upload",
 			},
@@ -121,7 +125,7 @@ func init() {
 					encoder.EncodeDot),
 			},
 			{
-				Name:     "optimistic_search",
+				Name:     "eventually_consistent_delay",
 				Default:  false,
 				Advanced: true,
 				Help:     "Assume the asset is there so will retry Search",
@@ -132,12 +136,13 @@ func init() {
 
 // Options defines the configuration for this backend
 type Options struct {
-	CloudName        string               `config:"cloud_name"`
-	APIKey           string               `config:"api_key"`
-	APISecret        string               `config:"api_secret"`
-	UploadPreset     string               `config:"upload_preset"`
-	Enc              encoder.MultiEncoder `config:"encoding"`
-	OptimisticSearch bool                 `config:"optimistic_search"`
+	CloudName                 string               `config:"cloud_name"`
+	APIKey                    string               `config:"api_key"`
+	APISecret                 string               `config:"api_secret"`
+	UploadPrefix              string               `config:"upload_prefix"`
+	UploadPreset              string               `config:"upload_preset"`
+	Enc                       encoder.MultiEncoder `config:"encoding"`
+	EventuallyConsistentDelay string               `config:"eventually_consistent_delay"`
 }
 
 // Fs represents a remote cloudinary server
@@ -148,6 +153,7 @@ type Fs struct {
 	features *fs.Features
 	srv      *rest.Client // the connection to the server
 	cld      *cloudinary.Cloudinary
+	lastCRUD time.Time
 }
 
 // Object describes a cloudinary object
@@ -210,6 +216,9 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cloudinary client: %w", err)
 	}
+	if opt.UploadPrefix != "" {
+		cld.Config.API.UploadPrefix = opt.UploadPrefix
+	}
 	client := fshttp.NewClient(ctx)
 	f := &Fs{
 		name: name,
@@ -259,6 +268,18 @@ func (f *Fs) FromStandardFullPath(dir string) string {
 	return path.Join(CloudinaryEncoder.FromStandardPath(f, f.root), CloudinaryEncoder.FromStandardPath(f, dir))
 }
 
+// Wait till the FS is eventually consistent
+func (f *Fs) WaitEventuallyConsistent() {
+	timeSinceLastCRUD := time.Since(f.lastCRUD)
+	delaySeconds, err := strconv.Atoi(f.opt.EventuallyConsistentDelay)
+	if err != nil {
+		print("failed to convert EventuallyConsistentDelay to integer: %w", err)
+	}
+	if delaySeconds > 0 && timeSinceLastCRUD.Seconds() < float64(delaySeconds) {
+		time.Sleep(time.Duration(delaySeconds)*time.Second - timeSinceLastCRUD)
+	}
+}
+
 // String converts this Fs to a string
 func (f *Fs) String() string {
 	return fmt.Sprintf("Cloudinary root '%s'", f.root)
@@ -279,7 +300,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	var entries fs.DirEntries
 	dirs := make(map[string]struct{})
 	nextCursor := ""
-
+	f.WaitEventuallyConsistent()
 	for {
 		// user the folders api to list folders.
 		folderParams := admin.SubFoldersParams{
@@ -365,7 +386,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 }
 
 // getCLDAsset finds the asset at Cloudinary. If it can't be found it returns the error fs.ErrorObjectNotFound.
-func (f *Fs) getCLDAsset(ctx context.Context, remote string, tryNum int8) (*admin.SearchAsset, error) {
+func (f *Fs) getCLDAsset(ctx context.Context, remote string) (*admin.SearchAsset, error) {
 	// Use the Search API to get the specific asset by display name and asset folder
 
 	searchParams := search.Query{
@@ -374,11 +395,8 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string, tryNum int8) (*admi
 			CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
 		MaxResults: 1,
 	}
+	f.WaitEventuallyConsistent()
 	results, err := f.cld.Admin.Search(ctx, searchParams)
-	if f.opt.OptimisticSearch && len(results.Assets) == 0 && tryNum < 3 {
-		time.Sleep(1 * time.Second)
-		return f.getCLDAsset(ctx, remote, tryNum+1)
-	}
 	if err != nil || len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
@@ -388,7 +406,7 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string, tryNum int8) (*admi
 
 // NewObject finds the Object at remote. If it can't be found it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	asset, err := f.getCLDAsset(ctx, remote, 0)
+	asset, err := f.getCLDAsset(ctx, remote)
 	if err != nil {
 		return nil, err
 	}
@@ -444,6 +462,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		}
 	}
 	uploadResult, err := f.cld.Upload.Upload(ctx, in, params)
+	f.lastCRUD = time.Now()
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
 	}
@@ -476,6 +495,7 @@ func (f *Fs) Hashes() hash.Set {
 func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	params := admin.CreateFolderParams{Folder: f.FromStandardFullPath(dir)}
 	res, err := f.cld.Admin.CreateFolder(ctx, params)
+	f.lastCRUD = time.Now()
 	if err != nil {
 		return err
 	}
@@ -489,6 +509,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	params := admin.DeleteFolderParams{Folder: f.FromStandardFullPath(dir)}
 	res, err := f.cld.Admin.DeleteFolder(ctx, params)
+	f.lastCRUD = time.Now()
 	if err != nil {
 		return err
 	}
@@ -504,7 +525,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 }
 
 func (f *Fs) Remove(ctx context.Context, o fs.Object) error {
-	asset, err := f.getCLDAsset(ctx, o.Remote(), 0)
+	asset, err := f.getCLDAsset(ctx, o.Remote())
 	if err != nil {
 		return err
 	}
@@ -514,6 +535,7 @@ func (f *Fs) Remove(ctx context.Context, o fs.Object) error {
 		Type:         asset.Type,
 	}
 	res, dErr := f.cld.Upload.Destroy(ctx, params)
+	f.lastCRUD = time.Now()
 	if dErr != nil {
 		return dErr
 	}

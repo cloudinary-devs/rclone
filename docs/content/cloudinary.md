@@ -106,6 +106,11 @@ y/g> y
 Enter a value.
 api_secret> ****************************
 
+Option upload_prefix.
+[Upload prefix](https://cloudinary.com/documentation/cloudinary_sdks#configuration_parameters) to specify alternative data center
+Enter a value.
+upload_prefix>
+
 Option upload_preset.
 [Upload presets](https://cloudinary.com/documentation/upload_presets) can be defined for different upload profiles
 Enter a value.
@@ -122,6 +127,7 @@ Options:
 - api_key: ****************************
 - api_secret: ****************************
 - cloud_name: ****************************
+- upload_prefix:
 - upload_preset:
 
 Keep this "cloudinary-media-library" remote?
@@ -187,6 +193,17 @@ Properties:
 - Env Var:     RCLONE_CLOUDINARY_API_SECRET
 - Type:        string
 - Required:    true
+
+#### --cloudinary-upload-prefix
+
+Upload Prefix to use for upload
+
+Properties:
+
+- Config:      upload_prefix
+- Env Var:     RCLONE_CLOUDINARY_UPLOAD_PREFIX
+- Type:        string
+- Required:    false
 
 #### --cloudinary-upload-preset
 
