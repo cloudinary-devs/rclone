@@ -465,3 +465,6 @@ backends:
  - backend:  "ulozto"
    remote:   "TestUlozto:"
    fastlist: false
+   - backend:  "cloudinary"
+   remote:   "TestCloudinary:"
+   fastlist: true
