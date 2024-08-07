@@ -104,9 +104,6 @@ backends:
  ## end chunker
  - backend:  "cloudinary"
    remote:   "TestCloudinary:"
-   fastlist: true
- - backend:  "cloudinary"
-   remote:   "TestCloudinary:"
    fastlist: false
  - backend:  "combine"
    remote:   "TestCombine:dir1"
