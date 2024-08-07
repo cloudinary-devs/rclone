@@ -30,26 +30,6 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-func (f *Fs) FromStandardPath(s string) string {
-	return strings.Replace(f.opt.Enc.FromStandardPath(s), "&", "\uFF06", -1)
-}
-
-func (f *Fs) FromStandardName(s string) string {
-	return strings.Replace(f.opt.Enc.FromStandardName(s), "&", "\uFF06", -1)
-}
-
-func (f *Fs) ToStandardPath(s string) string {
-	return strings.Replace(f.opt.Enc.ToStandardPath(s), "\uFF06", "&", -1)
-}
-
-func (f *Fs) ToStandardName(s string) string {
-	return strings.Replace(f.opt.Enc.ToStandardName(s), "\uFF06", "&", -1)
-}
-
-func (f *Fs) FromStandardFullPath(dir string) string {
-	return path.Join(api.CloudinaryEncoder.FromStandardPath(f, f.root), api.CloudinaryEncoder.FromStandardPath(f, dir))
-}
-
 // Cloudinary shouldn't have a trailing dot if there is no path
 func cldPathDir(somePath string) string {
 	if somePath == "" || somePath == "." {
@@ -157,20 +137,6 @@ type Object struct {
 	deliveryType string
 }
 
-func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
-	if ty != hash.MD5 {
-		return "", hash.ErrUnsupported
-	}
-	return o.md5sum, nil
-}
-
-func (o *Object) String() string {
-	if o == nil {
-		return "<nil>"
-	}
-	return o.remote
-}
-
 // NewFs constructs an Fs from the path, bucket:path
 func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (fs.Fs, error) {
 	opt := new(Options)
@@ -219,6 +185,29 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 		return f, fs.ErrorIsFile
 	}
 	return f, nil
+}
+
+// ------------------------------------------------------------
+
+// Implementation of the api.CloudinaryEncoder
+func (f *Fs) FromStandardPath(s string) string {
+	return strings.Replace(f.opt.Enc.FromStandardPath(s), "&", "\uFF06", -1)
+}
+
+func (f *Fs) FromStandardName(s string) string {
+	return strings.Replace(f.opt.Enc.FromStandardName(s), "&", "\uFF06", -1)
+}
+
+func (f *Fs) ToStandardPath(s string) string {
+	return strings.Replace(f.opt.Enc.ToStandardPath(s), "\uFF06", "&", -1)
+}
+
+func (f *Fs) ToStandardName(s string) string {
+	return strings.Replace(f.opt.Enc.ToStandardName(s), "\uFF06", "&", -1)
+}
+
+func (f *Fs) FromStandardFullPath(dir string) string {
+	return path.Join(api.CloudinaryEncoder.FromStandardPath(f, f.root), api.CloudinaryEncoder.FromStandardPath(f, dir))
 }
 
 // Name of the remote (as passed into NewFs)
@@ -517,7 +506,21 @@ func (f *Fs) Remove(ctx context.Context, o fs.Object) error {
 	return nil
 }
 
-// Object methods
+// ------------------------------------------------------------
+
+func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
+	if ty != hash.MD5 {
+		return "", hash.ErrUnsupported
+	}
+	return o.md5sum, nil
+}
+
+func (o *Object) String() string {
+	if o == nil {
+		return "<nil>"
+	}
+	return o.remote
+}
 
 func (o *Object) Fs() fs.Info {
 	return o.fs
@@ -543,7 +546,6 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	return fs.ErrorCantSetModTime
 }
 
-// Open an object for read
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
 	var resp *http.Response
 	opts := rest.Opts{
