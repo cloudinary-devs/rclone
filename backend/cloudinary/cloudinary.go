@@ -13,10 +13,11 @@ import (
 	"time"
 
 	"github.com/cloudinary/cloudinary-go/v2"
-	"github.com/cloudinary/cloudinary-go/v2/api"
+	SDKApi "github.com/cloudinary/cloudinary-go/v2/api"
 	"github.com/cloudinary/cloudinary-go/v2/api/admin"
 	"github.com/cloudinary/cloudinary-go/v2/api/admin/search"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
+	"github.com/rclone/rclone/backend/cloudinary/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
@@ -28,22 +29,6 @@ import (
 	"github.com/rclone/rclone/lib/rest"
 	"github.com/zeebo/blake3"
 )
-
-// Extend the built-in encoder
-type CloudinaryEncoder interface {
-	// FromStandardPath takes a / separated path in Standard encoding
-	// and converts it to a / separated path in this encoding.
-	FromStandardPath(string) string
-	// FromStandardName takes name in Standard encoding and converts
-	// it in this encoding.
-	FromStandardName(string) string
-	// ToStandardPath takes a / separated path in this encoding
-	// and converts it to a / separated path in Standard encoding.
-	ToStandardPath(string) string
-	// ToStandardName takes name in this encoding and converts
-	// it in Standard encoding.
-	ToStandardName(string) string
-}
 
 func (f *Fs) FromStandardPath(s string) string {
 	return strings.Replace(f.opt.Enc.FromStandardPath(s), "&", "\uFF06", -1)
@@ -59,6 +44,10 @@ func (f *Fs) ToStandardPath(s string) string {
 
 func (f *Fs) ToStandardName(s string) string {
 	return strings.Replace(f.opt.Enc.ToStandardName(s), "\uFF06", "&", -1)
+}
+
+func (f *Fs) FromStandardFullPath(dir string) string {
+	return path.Join(api.CloudinaryEncoder.FromStandardPath(f, f.root), api.CloudinaryEncoder.FromStandardPath(f, dir))
 }
 
 // Cloudinary shouldn't have a trailing dot if there is no path
@@ -168,26 +157,6 @@ type Object struct {
 	deliveryType string
 }
 
-type updateOptions struct {
-	PublicID     string
-	ResourceType string
-	DeliveryType string
-}
-
-func (o *updateOptions) Header() (string, string) {
-	return "UpdateOption", fmt.Sprintf("%s/%s/%s", o.ResourceType, o.DeliveryType, o.PublicID)
-}
-
-// Mandatory returns whether the option must be parsed or can be ignored
-func (o *updateOptions) Mandatory() bool {
-	return false
-}
-
-// String formats the option into human-readable form
-func (o *updateOptions) String() string {
-	return fmt.Sprintf("Fully qualified Public ID: %s/%s/%s", o.ResourceType, o.DeliveryType, o.PublicID)
-}
-
 func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
 	if ty != hash.MD5 {
 		return "", hash.ErrUnsupported
@@ -262,11 +231,6 @@ func (f *Fs) Root() string {
 	return f.root
 }
 
-// Encoded root of the remote (as passed into NewFs)
-func (f *Fs) FromStandardFullPath(dir string) string {
-	return path.Join(CloudinaryEncoder.FromStandardPath(f, f.root), CloudinaryEncoder.FromStandardPath(f, dir))
-}
-
 // Wait till the FS is eventually consistent
 func (f *Fs) WaitEventuallyConsistent() {
 	if f.opt.EventuallyConsistentDelay == "" {
@@ -326,7 +290,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		}
 
 		for _, folder := range results.Folders {
-			relativePath := CloudinaryEncoder.ToStandardPath(f, strings.TrimPrefix(folder.Path, remotePrefix))
+			relativePath := api.CloudinaryEncoder.ToStandardPath(f, strings.TrimPrefix(folder.Path, remotePrefix))
 			parts := strings.Split(relativePath, "/")
 
 			// It's a directory
@@ -360,9 +324,9 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		}
 
 		for _, asset := range results.Assets {
-			remote := CloudinaryEncoder.ToStandardName(f, asset.DisplayName)
+			remote := api.CloudinaryEncoder.ToStandardName(f, asset.DisplayName)
 			if dir != "" {
-				remote = path.Join(dir, CloudinaryEncoder.ToStandardName(f, asset.DisplayName))
+				remote = path.Join(dir, api.CloudinaryEncoder.ToStandardName(f, asset.DisplayName))
 			}
 			o := &Object{
 				fs:           f,
@@ -394,7 +358,7 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string) (*admin.SearchAsset
 	searchParams := search.Query{
 		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
 			f.FromStandardFullPath(cldPathDir(remote)),
-			CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
+			api.CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
 		MaxResults: 1,
 	}
 	f.WaitEventuallyConsistent()
@@ -442,7 +406,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 
 	params := uploader.UploadParams{
 		AssetFolder:  f.FromStandardFullPath(cldPathDir(src.Remote())),
-		DisplayName:  CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
+		DisplayName:  api.CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
 		UploadPreset: f.opt.UploadPreset,
 	}
 
@@ -452,13 +416,13 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	params.FilenameOverride = f.getSuggestedPublicID(params.AssetFolder, params.DisplayName, src.ModTime(ctx))
 
 	for _, option := range options {
-		if updateOptions, ok := option.(*updateOptions); ok {
+		if updateOptions, ok := option.(*api.UpdateOptions); ok {
 			if updateOptions.PublicID != "" {
-				params.Overwrite = api.Bool(true)
-				params.Invalidate = api.Bool(true)
+				params.Overwrite = SDKApi.Bool(true)
+				params.Invalidate = SDKApi.Bool(true)
 				params.PublicID = updateOptions.PublicID
 				params.ResourceType = updateOptions.ResourceType
-				params.Type = api.DeliveryType(updateOptions.DeliveryType)
+				params.Type = SDKApi.DeliveryType(updateOptions.DeliveryType)
 				params.FilenameOverride = ""
 			}
 		}
@@ -634,7 +598,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 	srcImmutable := object.NewStaticObjectInfo(o.Remote(), src.ModTime(ctx), src.Size(), true, nil, o.Fs())
-	options = append(options, &updateOptions{
+	options = append(options, &api.UpdateOptions{
 		PublicID:     o.publicID,
 		ResourceType: o.resourceType,
 		DeliveryType: o.deliveryType,
