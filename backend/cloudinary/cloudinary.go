@@ -340,14 +340,13 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	return entries, nil
 }
 
-// getCLDAsset finds the asset at Cloudinary. If it can't be found it returns the error fs.ErrorObjectNotFound.
-func (f *Fs) getCLDAsset(ctx context.Context, remote string) (*admin.SearchAsset, error) {
-	// Use the Search API to get the specific asset by display name and asset folder
-
+// NewObject finds the Object at remote. If it can't be found it returns the error fs.ErrorObjectNotFound.
+func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	searchParams := search.Query{
 		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
 			f.FromStandardFullPath(cldPathDir(remote)),
 			api.CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
+		SortBy:     []search.SortByField{{"uploaded_at": "desc"}},
 		MaxResults: 1,
 	}
 	f.WaitEventuallyConsistent()
@@ -358,16 +357,7 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string) (*admin.SearchAsset
 	if len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
-
-	return &results.Assets[0], nil
-}
-
-// NewObject finds the Object at remote. If it can't be found it returns the error fs.ErrorObjectNotFound.
-func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	asset, err := f.getCLDAsset(ctx, remote)
-	if err != nil {
-		return nil, err
-	}
+	asset := results.Assets[0]
 
 	o := &Object{
 		fs:           f,
@@ -477,33 +467,6 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 		}
 
 		return fmt.Errorf(res.Error.Message)
-	}
-
-	return nil
-}
-
-func (f *Fs) Remove(ctx context.Context, o fs.Object) error {
-	asset, err := f.getCLDAsset(ctx, o.Remote())
-	if err != nil {
-		return err
-	}
-	params := uploader.DestroyParams{
-		PublicID:     asset.PublicID,
-		ResourceType: asset.ResourceType,
-		Type:         asset.Type,
-	}
-	res, dErr := f.cld.Upload.Destroy(ctx, params)
-	f.lastCRUD = time.Now()
-	if dErr != nil {
-		return dErr
-	}
-
-	if res.Error.Message != "" {
-		return fmt.Errorf(res.Error.Message)
-	}
-
-	if res.Result != "ok" {
-		return fmt.Errorf(res.Result)
 	}
 
 	return nil
@@ -625,5 +588,24 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 }
 
 func (o *Object) Remove(ctx context.Context) error {
-	return o.fs.Remove(ctx, o)
+	params := uploader.DestroyParams{
+		PublicID:     o.publicID,
+		ResourceType: o.resourceType,
+		Type:         o.deliveryType,
+	}
+	res, dErr := o.fs.cld.Upload.Destroy(ctx, params)
+	o.fs.lastCRUD = time.Now()
+	if dErr != nil {
+		return dErr
+	}
+
+	if res.Error.Message != "" {
+		return fmt.Errorf(res.Error.Message)
+	}
+
+	if res.Result != "ok" {
+		return fmt.Errorf(res.Result)
+	}
+
+	return nil
 }
