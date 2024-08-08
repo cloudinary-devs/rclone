@@ -352,7 +352,10 @@ func (f *Fs) getCLDAsset(ctx context.Context, remote string) (*admin.SearchAsset
 	}
 	f.WaitEventuallyConsistent()
 	results, err := f.cld.Admin.Search(ctx, searchParams)
-	if err != nil || len(results.Assets) == 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
 
