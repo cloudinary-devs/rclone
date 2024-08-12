@@ -354,6 +354,10 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Inconsistency so retry. Should we have a break condition?
+	if results.TotalCount != len(results.Assets) {
+		return f.NewObject(ctx, remote)
+	}
 	if results.TotalCount == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
