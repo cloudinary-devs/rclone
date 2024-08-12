@@ -354,7 +354,7 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(results.Assets) == 0 {
+	if results.TotalCount)== 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
 	asset := results.Assets[0]
