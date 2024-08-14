@@ -4,7 +4,7 @@ description: "Rclone docs for Cloudinary backend"
 versionIntroduced: "v1.0"
 
 ---
-# {{< icon "fa fa-image" >}} Cloudinary
+# {{< icon "fa fa-cloud" >}} Cloudinary
 
 This is a backend for the [Cloudinary](https://cloudinary.com/) platform
 
@@ -27,7 +27,13 @@ To use this backend, you need to [create a free account](https://cloudinary.com/
 
 * Add the retrieval instruction to your .zprofile / .profile
 
-`echo 'export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"' >> ~/.zprofile`
+`export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"`
+
+* Encrypt the config file
+
+  * Execute `rclone config` -> `s`
+
+  * Add/update the password from previous steps
 
 ### Linux
 
@@ -42,9 +48,15 @@ then initialize a password store:
 
 `echo $(openssl rand -base64 40) | pass insert -m rclone/config`
 
-* Add the retrieval instruction to your .profile
+* Add the retrieval instruction
 
-`echo 'export RCLONE_PASSWORD_COMMAND="pass rclone/config"' >> ~/.profile`
+`export RCLONE_PASSWORD_COMMAND="pass rclone/config"`
+
+* Encrypt the config file
+
+  * Execute `rclone config` -> `s`
+
+  * Add/update the password from previous steps
 
 ### Windows
 
@@ -55,6 +67,12 @@ then initialize a password store:
 * Add the password retrieval instruction
 
 `[Environment]::SetEnvironmentVariable("RCLONE_PASSWORD_COMMAND", "[System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR((Import-Clixml -Path "rclone-credential.xml").Password))")`
+
+* Encrypt the config file
+
+  * Execute `rclone config` -> `s`
+
+  * Add/update the password from previous steps
 
 ## Configuration
 
