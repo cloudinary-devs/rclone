@@ -29,6 +29,12 @@ To use this backend, you need to [create a free account](https://cloudinary.com/
 
 `export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"`
 
+* Encrypt the config file
+
+  * Execute `rclone config` -> `s`
+
+  * Add/update the password from previous steps
+
 ### Linux
 
 * Prerequisite
@@ -46,6 +52,12 @@ then initialize a password store:
 
 `export RCLONE_PASSWORD_COMMAND="pass rclone/config"`
 
+* Encrypt the config file
+
+  * Execute `rclone config` -> `s`
+
+  * Add/update the password from previous steps
+
 ### Windows
 
 * Generate and store a password
@@ -55,6 +67,12 @@ then initialize a password store:
 * Add the password retrieval instruction
 
 `[Environment]::SetEnvironmentVariable("RCLONE_PASSWORD_COMMAND", "[System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR((Import-Clixml -Path "rclone-credential.xml").Password))")`
+
+* Encrypt the config file
+
+  * Execute `rclone config` -> `s`
+
+  * Add/update the password from previous steps
 
 ## Configuration
 
