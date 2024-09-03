@@ -19,21 +19,17 @@ To use this backend, you need to [create a free account](https://cloudinary.com/
 
 ## Securing Your Credentials
 
+It is recommended to use a full path to the binary of the password utility. We will first prepare the system, and later encrypt the rclone config file
+
 ### Mac
 
 * Generate and store a password
 
-`security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)`
+`/usr/bin/security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)`
 
 * Add the retrieval instruction to your .zprofile / .profile
 
-`export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"`
-
-* Encrypt the config file
-
-  * Execute `rclone config` -> `s`
-
-  * Add/update the password from previous steps
+`export RCLONE_PASSWORD_COMMAND="/usr/bin/security find-generic-password -a rclone -s config -w"`
 
 ### Linux
 
@@ -52,12 +48,6 @@ then initialize a password store:
 
 `export RCLONE_PASSWORD_COMMAND="pass rclone/config"`
 
-* Encrypt the config file
-
-  * Execute `rclone config` -> `s`
-
-  * Add/update the password from previous steps
-
 ### Windows
 
 * Generate and store a password
@@ -68,11 +58,11 @@ then initialize a password store:
 
 `[Environment]::SetEnvironmentVariable("RCLONE_PASSWORD_COMMAND", "[System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR((Import-Clixml -Path "rclone-credential.xml").Password))")`
 
-* Encrypt the config file
+### Encrypt the config file (all systems)
 
-  * Execute `rclone config` -> `s`
+* Execute `rclone config` -> `s`
 
-  * Add/update the password from previous steps
+* Add/update the password from previous steps
 
 ## Configuration
 

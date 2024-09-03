@@ -163,7 +163,6 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 	}
 
 	f.features = (&fs.Features{
-		CaseInsensitive:         false,
 		CanHaveEmptyDirectories: true,
 		DuplicateFiles:          true,
 	}).Fill(ctx, f)
@@ -210,6 +209,14 @@ func (f *Fs) FromStandardFullPath(dir string) string {
 	return path.Join(api.CloudinaryEncoder.FromStandardPath(f, f.root), api.CloudinaryEncoder.FromStandardPath(f, dir))
 }
 
+func (f *Fs) ToAssetFolderApi(dir string) string {
+	return strings.Replace(dir, "%", "%25", -1)
+}
+
+func (f *Fs) ToDisplayNameElastic(dir string) string {
+	return strings.Replace(dir, "!", "\\!", -1)
+}
+
 // Name of the remote (as passed into NewFs)
 func (f *Fs) Name() string {
 	return f.name
@@ -228,7 +235,7 @@ func (f *Fs) WaitEventuallyConsistent() {
 	timeSinceLastCRUD := time.Since(f.lastCRUD)
 	delaySeconds, err := strconv.Atoi(f.opt.EventuallyConsistentDelay)
 	if err != nil {
-		print("failed to convert EventuallyConsistentDelay to integer: %w", err)
+		fs.Errorf(f, "failed to convert EventuallyConsistentDelay to integer from '%s'", f.opt.EventuallyConsistentDelay)
 	}
 	if delaySeconds > 0 && timeSinceLastCRUD.Seconds() < float64(delaySeconds) {
 		time.Sleep(time.Duration(delaySeconds)*time.Second - timeSinceLastCRUD)
@@ -245,7 +252,7 @@ func (f *Fs) Features() *fs.Features {
 	return f.features
 }
 
-// List the objects and directories in dir into entries.
+// List the objects and directories in dir into entries
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	remotePrefix := f.FromStandardFullPath(dir)
 	if remotePrefix != "" && !strings.HasSuffix(remotePrefix, "/") {
@@ -259,7 +266,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	for {
 		// user the folders api to list folders.
 		folderParams := admin.SubFoldersParams{
-			Folder:     remotePrefix,
+			Folder:     f.ToAssetFolderApi(remotePrefix),
 			MaxResults: 500,
 		}
 		if nextCursor != "" {
@@ -283,9 +290,9 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 			parts := strings.Split(relativePath, "/")
 
 			// It's a directory
-			dirName := parts[0]
+			dirName := parts[len(parts)-1]
 			if _, found := dirs[dirName]; !found {
-				d := fs.NewDir(path.Join(dir, dirName), time.Now())
+				d := fs.NewDir(path.Join(dir, dirName), time.Time{})
 				entries = append(entries, d)
 				dirs[dirName] = struct{}{}
 			}
@@ -340,12 +347,52 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	return entries, nil
 }
 
+// Move src to this remote using server-side move operations.
+func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	srcObj, ok := src.(*Object)
+	if !ok {
+		fs.Debugf(src, "Can't move - not same remote type")
+		return nil, fs.ErrorCantMove
+	}
+
+	renameParams := uploader.ExplicitParams{
+		PublicID:     srcObj.publicID,
+		Type:         SDKApi.DeliveryType(srcObj.deliveryType),
+		ResourceType: srcObj.resourceType,
+		AssetFolder:  f.FromStandardFullPath(cldPathDir(remote)),
+		DisplayName:  api.CloudinaryEncoder.FromStandardName(f, path.Base(remote)),
+	}
+	renameResult, err := f.cld.Upload.Explicit(ctx, renameParams)
+
+	f.lastCRUD = time.Now()
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
+	}
+	if renameResult.Error.Message != "" {
+		return nil, errors.New(renameResult.Error.Message)
+	}
+
+	o := &Object{
+		fs:           f,
+		remote:       remote,
+		size:         int64(renameResult.Bytes),
+		modTime:      renameResult.CreatedAt,
+		url:          renameResult.SecureURL,
+		md5sum:       srcObj.md5sum,
+		publicID:     renameResult.PublicID,
+		resourceType: renameResult.ResourceType,
+		deliveryType: renameResult.Type,
+	}
+
+	return o, nil
+}
+
 // NewObject finds the Object at remote. If it can't be found it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	searchParams := search.Query{
-		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
+		Expression: fmt.Sprintf("asset_folder:\"%s\" AND display_name:\"%s\"",
 			f.FromStandardFullPath(cldPathDir(remote)),
-			api.CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
+			f.ToDisplayNameElastic(api.CloudinaryEncoder.FromStandardName(f, path.Base(remote)))),
 		SortBy:     []search.SortByField{{"uploaded_at": "desc"}},
 		MaxResults: 1,
 	}
@@ -354,7 +401,7 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Inconsistency so retry. Should we have a break condition?
+	// Eventual consistency so retrying
 	if results.TotalCount != len(results.Assets) {
 		return f.NewObject(ctx, remote)
 	}
@@ -419,7 +466,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
 	}
 	if uploadResult.Error.Message != "" {
-		return nil, fmt.Errorf(uploadResult.Error.Message)
+		return nil, errors.New(uploadResult.Error.Message)
 	}
 
 	o := &Object{
@@ -441,25 +488,25 @@ func (f *Fs) Precision() time.Duration {
 }
 
 func (f *Fs) Hashes() hash.Set {
-	return hash.Set(hash.None)
+	return hash.Set(hash.MD5)
 }
 
 func (f *Fs) Mkdir(ctx context.Context, dir string) error {
-	params := admin.CreateFolderParams{Folder: f.FromStandardFullPath(dir)}
+	params := admin.CreateFolderParams{Folder: f.ToAssetFolderApi(f.FromStandardFullPath(dir))}
 	res, err := f.cld.Admin.CreateFolder(ctx, params)
 	f.lastCRUD = time.Now()
 	if err != nil {
 		return err
 	}
 	if res.Error.Message != "" {
-		return fmt.Errorf(res.Error.Message)
+		return errors.New(res.Error.Message)
 	}
 
 	return nil
 }
 
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	params := admin.DeleteFolderParams{Folder: f.FromStandardFullPath(dir)}
+	params := admin.DeleteFolderParams{Folder: f.ToAssetFolderApi(f.FromStandardFullPath(dir))}
 	res, err := f.cld.Admin.DeleteFolder(ctx, params)
 	f.lastCRUD = time.Now()
 	if err != nil {
@@ -470,7 +517,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 			return fs.ErrorDirNotFound
 		}
 
-		return fmt.Errorf(res.Error.Message)
+		return errors.New(res.Error.Message)
 	}
 
 	return nil
@@ -604,11 +651,11 @@ func (o *Object) Remove(ctx context.Context) error {
 	}
 
 	if res.Error.Message != "" {
-		return fmt.Errorf(res.Error.Message)
+		return errors.New(res.Error.Message)
 	}
 
 	if res.Result != "ok" {
-		return fmt.Errorf(res.Result)
+		return errors.New(res.Result)
 	}
 
 	return nil
