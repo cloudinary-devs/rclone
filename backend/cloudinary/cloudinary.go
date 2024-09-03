@@ -396,16 +396,20 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		SortBy:     []search.SortByField{{"uploaded_at": "desc"}},
 		MaxResults: 1,
 	}
-	f.WaitEventuallyConsistent()
-	results, err := f.cld.Admin.Search(ctx, searchParams)
-	if err != nil {
-		return nil, err
+	var results *admin.SearchResult
+	var err error
+	for i := 1; i <= 4; i++ {
+		f.WaitEventuallyConsistent()
+		results, err = f.cld.Admin.Search(ctx, searchParams)
+		if err != nil {
+			return nil, err
+		}
+		// Eventual consistency so retrying
+		if results.TotalCount == len(results.Assets) {
+			break
+		}
 	}
-	// Eventual consistency so retrying
-	if results.TotalCount != len(results.Assets) {
-		return f.NewObject(ctx, remote)
-	}
-	if results.TotalCount == 0 {
+	if results.TotalCount == 0 || len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
 	asset := results.Assets[0]
