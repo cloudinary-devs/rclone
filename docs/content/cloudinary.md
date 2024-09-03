@@ -19,15 +19,17 @@ To use this backend, you need to [create a free account](https://cloudinary.com/
 
 ## Securing Your Credentials
 
+It is recommended to use a full path to the binary of the password utility. We will first prepare the system, and later encrypt the rclone config file
+
 ### Mac
 
 * Generate and store a password
 
-`security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)`
+`/usr/bin/security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)`
 
 * Add the retrieval instruction to your .zprofile / .profile
 
-`export RCLONE_PASSWORD_COMMAND="security find-generic-password -a rclone -s config -w"`
+`export RCLONE_PASSWORD_COMMAND="/usr/bin/security find-generic-password -a rclone -s config -w"`
 
 ### Linux
 
@@ -55,6 +57,12 @@ then initialize a password store:
 * Add the password retrieval instruction
 
 `[Environment]::SetEnvironmentVariable("RCLONE_PASSWORD_COMMAND", "[System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR((Import-Clixml -Path "rclone-credential.xml").Password))")`
+
+### Encrypt the config file (all systems)
+
+* Execute `rclone config` -> `s`
+
+* Add/update the password from previous steps
 
 ## Configuration
 
@@ -106,6 +114,11 @@ y/g> y
 Enter a value.
 api_secret> ****************************
 
+Option upload_prefix.
+[Upload prefix](https://cloudinary.com/documentation/cloudinary_sdks#configuration_parameters) to specify alternative data center
+Enter a value.
+upload_prefix>
+
 Option upload_preset.
 [Upload presets](https://cloudinary.com/documentation/upload_presets) can be defined for different upload profiles
 Enter a value.
@@ -122,6 +135,7 @@ Options:
 - api_key: ****************************
 - api_secret: ****************************
 - cloud_name: ****************************
+- upload_prefix:
 - upload_preset:
 
 Keep this "cloudinary-media-library" remote?
@@ -187,6 +201,17 @@ Properties:
 - Env Var:     RCLONE_CLOUDINARY_API_SECRET
 - Type:        string
 - Required:    true
+
+#### --cloudinary-upload-prefix
+
+Upload Prefix to use for upload
+
+Properties:
+
+- Config:      upload_prefix
+- Env Var:     RCLONE_CLOUDINARY_UPLOAD_PREFIX
+- Type:        string
+- Required:    false
 
 #### --cloudinary-upload-preset
 
