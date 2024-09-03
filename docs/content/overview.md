@@ -494,7 +494,7 @@ upon backend-specific capabilities.
 | Box                          | Yes   | Yes  | Yes  | Yes     | Yes     | No    | Yes          | No                | Yes          | Yes   | Yes      |
 | Citrix ShareFile             | Yes   | Yes  | Yes  | Yes     | No      | No    | No           | No                | No           | No    | Yes      |
 | Dropbox                      | Yes   | Yes  | Yes  | Yes     | No      | No    | Yes          | No                | Yes          | Yes   | Yes      |
-| Cloudinary                   | No    | No   | No   | No      | No      | No    | Yes          | No                | No           | No    | No       |
+| Cloudinary                   | No    | No   | Yes   | No      | No      | No    | Yes          | No                | No           | No    | No       |
 | Enterprise File Fabric       | Yes   | Yes  | Yes  | Yes     | Yes     | No    | No           | No                | No           | No    | Yes      |
 | FTP                          | No    | No   | Yes  | Yes     | No      | No    | Yes          | No                | No           | No    | Yes      |
 | Google Cloud Storage         | Yes   | Yes  | No   | No      | No      | Yes   | Yes          | No                | No           | No    | No       |
