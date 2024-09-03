@@ -25,7 +25,7 @@ It is recommended to use a full path to the binary of the password utility. We w
 
 * Generate and store a password
 
-`/usr/bin/security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)`
+`security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)`
 
 * Add the retrieval instruction to your .zprofile / .profile
 
@@ -46,7 +46,7 @@ then initialize a password store:
 
 * Add the retrieval instruction
 
-`export RCLONE_PASSWORD_COMMAND="pass rclone/config"`
+`export RCLONE_PASSWORD_COMMAND="/usr/bin/pass rclone/config"`
 
 ### Windows
 
