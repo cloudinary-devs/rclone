@@ -347,46 +347,6 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	return entries, nil
 }
 
-// Move src to this remote using server-side move operations.
-func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	srcObj, ok := src.(*Object)
-	if !ok {
-		fs.Debugf(src, "Can't move - not same remote type")
-		return nil, fs.ErrorCantMove
-	}
-
-	renameParams := uploader.ExplicitParams{
-		PublicID:     srcObj.publicID,
-		Type:         SDKApi.DeliveryType(srcObj.deliveryType),
-		ResourceType: srcObj.resourceType,
-		AssetFolder:  f.FromStandardFullPath(cldPathDir(remote)),
-		DisplayName:  api.CloudinaryEncoder.FromStandardName(f, path.Base(remote)),
-	}
-	renameResult, err := f.cld.Upload.Explicit(ctx, renameParams)
-
-	f.lastCRUD = time.Now()
-	if err != nil {
-		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
-	}
-	if renameResult.Error.Message != "" {
-		return nil, errors.New(renameResult.Error.Message)
-	}
-
-	o := &Object{
-		fs:           f,
-		remote:       remote,
-		size:         int64(renameResult.Bytes),
-		modTime:      renameResult.CreatedAt,
-		url:          renameResult.SecureURL,
-		md5sum:       srcObj.md5sum,
-		publicID:     renameResult.PublicID,
-		resourceType: renameResult.ResourceType,
-		deliveryType: renameResult.Type,
-	}
-
-	return o, nil
-}
-
 // NewObject finds the Object at remote. If it can't be found it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	searchParams := search.Query{
