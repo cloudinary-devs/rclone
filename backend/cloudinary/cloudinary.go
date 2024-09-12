@@ -1,3 +1,4 @@
+// Package cloudinary provides an interface to the Cloudinary DAM
 package cloudinary
 
 import (
@@ -22,10 +23,11 @@ import (
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
+	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
-	"github.com/rclone/rclone/fs/object"
 	"github.com/rclone/rclone/lib/encoder"
+	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/rest"
 	"github.com/zeebo/blake3"
 )
@@ -50,14 +52,16 @@ func init() {
 		NewFs:       NewFs,
 		Options: []fs.Option{
 			{
-				Name:     "cloud_name",
-				Help:     "Cloudinary Environment Name",
-				Required: true,
+				Name:      "cloud_name",
+				Help:      "Cloudinary Environment Name",
+				Required:  true,
+				Sensitive: true,
 			},
 			{
-				Name:     "api_key",
-				Help:     "Cloudinary API Key",
-				Required: true,
+				Name:      "api_key",
+				Help:      "Cloudinary API Key",
+				Required:  true,
+				Sensitive: true,
 			},
 			{
 				Name:       "api_secret",
@@ -67,7 +71,7 @@ func init() {
 			},
 			{
 				Name: "upload_prefix",
-				Help: "Specify alternative data center",
+				Help: "Specify the API endpoint for environments out of the US",
 			},
 			{
 				Name: "upload_preset",
@@ -95,8 +99,9 @@ func init() {
 			},
 			{
 				Name:     "eventually_consistent_delay",
+				Default:  fs.Duration(0),
 				Advanced: true,
-				Help:     "Wait N seconds for eventual consistency",
+				Help:     "Wait N seconds for eventual consistency of the databases that support the backend operation",
 			},
 		},
 	})
@@ -110,7 +115,7 @@ type Options struct {
 	UploadPrefix              string               `config:"upload_prefix"`
 	UploadPreset              string               `config:"upload_preset"`
 	Enc                       encoder.MultiEncoder `config:"encoding"`
-	EventuallyConsistentDelay string               `config:"eventually_consistent_delay"`
+	EventuallyConsistentDelay fs.Duration          `config:"eventually_consistent_delay"`
 }
 
 // Fs represents a remote cloudinary server
@@ -119,8 +124,9 @@ type Fs struct {
 	root     string
 	opt      Options
 	features *fs.Features
-	srv      *rest.Client // the connection to the server
-	cld      *cloudinary.Cloudinary
+	pacer    *fs.Pacer
+	srv      *rest.Client           // For downloading assets via the Cloudinary CDN
+	cld      *cloudinary.Cloudinary // API calls are going through the Cloudinary SDK
 	lastCRUD time.Time
 }
 
@@ -150,20 +156,22 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cloudinary client: %w", err)
 	}
+	client := fshttp.NewClient(ctx)
+	cld.Admin.Client = *client
+	cld.Upload.Client = *client
 	if opt.UploadPrefix != "" {
 		cld.Config.API.UploadPrefix = opt.UploadPrefix
 	}
-	client := fshttp.NewClient(ctx)
 	f := &Fs{
-		name: name,
-		root: root,
-		opt:  *opt,
-		cld:  cld,
-		srv:  rest.NewClient(client),
+		name:  name,
+		root:  root,
+		opt:   *opt,
+		cld:   cld,
+		pacer: fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(1000), pacer.MaxSleep(10000), pacer.DecayConstant(2))),
+		srv:   rest.NewClient(client),
 	}
 
 	f.features = (&fs.Features{
-		CaseInsensitive:         false,
 		CanHaveEmptyDirectories: true,
 		DuplicateFiles:          true,
 	}).Fill(ctx, f)
@@ -189,25 +197,39 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 
 // ------------------------------------------------------------
 
-// Implementation of the api.CloudinaryEncoder
+// FromStandardPath implementation of the api.CloudinaryEncoder
 func (f *Fs) FromStandardPath(s string) string {
-	return strings.Replace(f.opt.Enc.FromStandardPath(s), "&", "\uFF06", -1)
+	return strings.ReplaceAll(f.opt.Enc.FromStandardPath(s), "&", "\uFF06")
 }
 
+// FromStandardName implementation of the api.CloudinaryEncoder
 func (f *Fs) FromStandardName(s string) string {
-	return strings.Replace(f.opt.Enc.FromStandardName(s), "&", "\uFF06", -1)
+	return strings.ReplaceAll(f.opt.Enc.FromStandardName(s), "&", "\uFF06")
 }
 
+// ToStandardPath implementation of the api.CloudinaryEncoder
 func (f *Fs) ToStandardPath(s string) string {
-	return strings.Replace(f.opt.Enc.ToStandardPath(s), "\uFF06", "&", -1)
+	return strings.ReplaceAll(f.opt.Enc.ToStandardPath(s), "\uFF06", "&")
 }
 
+// ToStandardName implementation of the api.CloudinaryEncoder
 func (f *Fs) ToStandardName(s string) string {
-	return strings.Replace(f.opt.Enc.ToStandardName(s), "\uFF06", "&", -1)
+	return strings.ReplaceAll(f.opt.Enc.ToStandardName(s), "\uFF06", "&")
 }
 
+// FromStandardFullPath encodes a full path to Cloudinary standard
 func (f *Fs) FromStandardFullPath(dir string) string {
 	return path.Join(api.CloudinaryEncoder.FromStandardPath(f, f.root), api.CloudinaryEncoder.FromStandardPath(f, dir))
+}
+
+// ToAssetFolderAPI encodes folders as expected by the Cloudinary SDK
+func (f *Fs) ToAssetFolderAPI(dir string) string {
+	return strings.ReplaceAll(dir, "%", "%25")
+}
+
+// ToDisplayNameElastic encodes a special case of elasticsearch
+func (f *Fs) ToDisplayNameElastic(dir string) string {
+	return strings.ReplaceAll(dir, "!", "\\!")
 }
 
 // Name of the remote (as passed into NewFs)
@@ -220,18 +242,15 @@ func (f *Fs) Root() string {
 	return f.root
 }
 
-// Wait till the FS is eventually consistent
+// WaitEventuallyConsistent waits till the FS is eventually consistent
 func (f *Fs) WaitEventuallyConsistent() {
-	if f.opt.EventuallyConsistentDelay == "" {
+	if f.opt.EventuallyConsistentDelay == fs.Duration(0) {
 		return
 	}
+	delay := time.Duration(f.opt.EventuallyConsistentDelay)
 	timeSinceLastCRUD := time.Since(f.lastCRUD)
-	delaySeconds, err := strconv.Atoi(f.opt.EventuallyConsistentDelay)
-	if err != nil {
-		print("failed to convert EventuallyConsistentDelay to integer: %w", err)
-	}
-	if delaySeconds > 0 && timeSinceLastCRUD.Seconds() < float64(delaySeconds) {
-		time.Sleep(time.Duration(delaySeconds)*time.Second - timeSinceLastCRUD)
+	if timeSinceLastCRUD < delay {
+		time.Sleep(delay - timeSinceLastCRUD)
 	}
 }
 
@@ -245,7 +264,7 @@ func (f *Fs) Features() *fs.Features {
 	return f.features
 }
 
-// List the objects and directories in dir into entries.
+// List the objects and directories in dir into entries
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	remotePrefix := f.FromStandardFullPath(dir)
 	if remotePrefix != "" && !strings.HasSuffix(remotePrefix, "/") {
@@ -259,7 +278,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	for {
 		// user the folders api to list folders.
 		folderParams := admin.SubFoldersParams{
-			Folder:     remotePrefix,
+			Folder:     f.ToAssetFolderAPI(remotePrefix),
 			MaxResults: 500,
 		}
 		if nextCursor != "" {
@@ -283,9 +302,9 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 			parts := strings.Split(relativePath, "/")
 
 			// It's a directory
-			dirName := parts[0]
+			dirName := parts[len(parts)-1]
 			if _, found := dirs[dirName]; !found {
-				d := fs.NewDir(path.Join(dir, dirName), time.Now())
+				d := fs.NewDir(path.Join(dir, dirName), time.Time{})
 				entries = append(entries, d)
 				dirs[dirName] = struct{}{}
 			}
@@ -343,22 +362,26 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 // NewObject finds the Object at remote. If it can't be found it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	searchParams := search.Query{
-		Expression: fmt.Sprintf("asset_folder=\"%s\" AND display_name=\"%s\"",
+		Expression: fmt.Sprintf("asset_folder:\"%s\" AND display_name:\"%s\"",
 			f.FromStandardFullPath(cldPathDir(remote)),
-			api.CloudinaryEncoder.FromStandardName(f, path.Base(remote))),
+			f.ToDisplayNameElastic(api.CloudinaryEncoder.FromStandardName(f, path.Base(remote)))),
 		SortBy:     []search.SortByField{{"uploaded_at": "desc"}},
 		MaxResults: 1,
 	}
+	var results *admin.SearchResult
 	f.WaitEventuallyConsistent()
-	results, err := f.cld.Admin.Search(ctx, searchParams)
+	err := f.pacer.Call(func() (bool, error) {
+		var err1 error
+		results, err1 = f.cld.Admin.Search(ctx, searchParams)
+		if err1 == nil && results.TotalCount != len(results.Assets) {
+			err1 = errors.New("partial response so waiting for eventual consistency")
+		}
+		return shouldRetry(ctx, nil, err1)
+	})
 	if err != nil {
-		return nil, err
+		return nil, fs.ErrorObjectNotFound
 	}
-	// Inconsistency so retry. Should we have a break condition?
-	if results.TotalCount != len(results.Assets) {
-		return f.NewObject(ctx, remote)
-	}
-	if results.TotalCount == 0 {
+	if results.TotalCount == 0 || len(results.Assets) == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
 	asset := results.Assets[0]
@@ -391,42 +414,51 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 
 	params := uploader.UploadParams{
-		AssetFolder:  f.FromStandardFullPath(cldPathDir(src.Remote())),
-		DisplayName:  api.CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote())),
 		UploadPreset: f.opt.UploadPreset,
 	}
 
-	// We want to conform to the unique asset ID of rclone, which is (asset_folder,display_name,last_modified).
-	// We also want to enable customers to choose their own public_id, in case duplicate names are not a crucial use case.
-	// Upload_presets that apply randomness to the public ID would not work well with rclone duplicate assets support.
-	params.FilenameOverride = f.getSuggestedPublicID(params.AssetFolder, params.DisplayName, src.ModTime(ctx))
-
+	updateObject := false
+	var modTime time.Time
 	for _, option := range options {
 		if updateOptions, ok := option.(*api.UpdateOptions); ok {
 			if updateOptions.PublicID != "" {
+				updateObject = true
 				params.Overwrite = SDKApi.Bool(true)
 				params.Invalidate = SDKApi.Bool(true)
 				params.PublicID = updateOptions.PublicID
 				params.ResourceType = updateOptions.ResourceType
 				params.Type = SDKApi.DeliveryType(updateOptions.DeliveryType)
-				params.FilenameOverride = ""
+				params.AssetFolder = updateOptions.AssetFolder
+				params.DisplayName = updateOptions.DisplayName
+				modTime = src.ModTime(ctx)
 			}
 		}
+	}
+	if !updateObject {
+		params.AssetFolder = f.FromStandardFullPath(cldPathDir(src.Remote()))
+		params.DisplayName = api.CloudinaryEncoder.FromStandardName(f, path.Base(src.Remote()))
+		// We want to conform to the unique asset ID of rclone, which is (asset_folder,display_name,last_modified).
+		// We also want to enable customers to choose their own public_id, in case duplicate names are not a crucial use case.
+		// Upload_presets that apply randomness to the public ID would not work well with rclone duplicate assets support.
+		params.FilenameOverride = f.getSuggestedPublicID(params.AssetFolder, params.DisplayName, src.ModTime(ctx))
 	}
 	uploadResult, err := f.cld.Upload.Upload(ctx, in, params)
 	f.lastCRUD = time.Now()
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload to Cloudinary: %w", err)
 	}
+	if !updateObject {
+		modTime = uploadResult.CreatedAt
+	}
 	if uploadResult.Error.Message != "" {
-		return nil, fmt.Errorf(uploadResult.Error.Message)
+		return nil, errors.New(uploadResult.Error.Message)
 	}
 
 	o := &Object{
 		fs:           f,
 		remote:       src.Remote(),
 		size:         int64(uploadResult.Bytes),
-		modTime:      uploadResult.CreatedAt,
+		modTime:      modTime,
 		url:          uploadResult.SecureURL,
 		md5sum:       uploadResult.Etag,
 		publicID:     uploadResult.PublicID,
@@ -436,30 +468,49 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	return o, nil
 }
 
+// Precision of the remote
 func (f *Fs) Precision() time.Duration {
 	return fs.ModTimeNotSupported
 }
 
+// Hashes returns the supported hash sets
 func (f *Fs) Hashes() hash.Set {
-	return hash.Set(hash.None)
+	return hash.Set(hash.MD5)
 }
 
+// Mkdir creates empty folders
 func (f *Fs) Mkdir(ctx context.Context, dir string) error {
-	params := admin.CreateFolderParams{Folder: f.FromStandardFullPath(dir)}
+	params := admin.CreateFolderParams{Folder: f.ToAssetFolderAPI(f.FromStandardFullPath(dir))}
 	res, err := f.cld.Admin.CreateFolder(ctx, params)
 	f.lastCRUD = time.Now()
 	if err != nil {
 		return err
 	}
 	if res.Error.Message != "" {
-		return fmt.Errorf(res.Error.Message)
+		return errors.New(res.Error.Message)
 	}
 
 	return nil
 }
 
+// Rmdir deletes empty folders
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	params := admin.DeleteFolderParams{Folder: f.FromStandardFullPath(dir)}
+	// Additional test because Cloudinary will delete folders without
+	// assets, regardless of empty sub-folders
+	folder := f.ToAssetFolderAPI(f.FromStandardFullPath(dir))
+	folderParams := admin.SubFoldersParams{
+		Folder:     folder,
+		MaxResults: 1,
+	}
+	results, err := f.cld.Admin.SubFolders(ctx, folderParams)
+	if err != nil {
+		return err
+	}
+	if results.TotalCount > 0 {
+		return fs.ErrorDirectoryNotEmpty
+	}
+
+	params := admin.DeleteFolderParams{Folder: folder}
 	res, err := f.cld.Admin.DeleteFolder(ctx, params)
 	f.lastCRUD = time.Now()
 	if err != nil {
@@ -470,14 +521,40 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 			return fs.ErrorDirNotFound
 		}
 
-		return fmt.Errorf(res.Error.Message)
+		return errors.New(res.Error.Message)
 	}
 
 	return nil
 }
 
+// retryErrorCodes is a slice of error codes that we will retry
+var retryErrorCodes = []int{
+	420, // Too Many Requests (legacy)
+	429, // Too Many Requests
+	500, // Internal Server Error
+	502, // Bad Gateway
+	503, // Service Unavailable
+	504, // Gateway Timeout
+	509, // Bandwidth Limit Exceeded
+}
+
+// shouldRetry returns a boolean as to whether this resp and err
+// deserve to be retried.  It returns the err as a convenience
+func shouldRetry(ctx context.Context, resp *http.Response, err error) (bool, error) {
+	if fserrors.ContextError(ctx, &err) {
+		return false, err
+	}
+	if err != nil {
+		fs.Debugf(nil, "Retrying API error %v", err)
+		return true, err
+	}
+
+	return fserrors.ShouldRetry(err) || fserrors.ShouldRetryHTTP(resp, retryErrorCodes), err
+}
+
 // ------------------------------------------------------------
 
+// Hash returns the MD5 of an object
 func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
 	if ty != hash.MD5 {
 		return "", hash.ErrUnsupported
@@ -485,6 +562,7 @@ func (o *Object) Hash(ctx context.Context, ty hash.Type) (string, error) {
 	return o.md5sum, nil
 }
 
+// Return a string version
 func (o *Object) String() string {
 	if o == nil {
 		return "<nil>"
@@ -492,30 +570,37 @@ func (o *Object) String() string {
 	return o.remote
 }
 
+// Fs returns the parent Fs
 func (o *Object) Fs() fs.Info {
 	return o.fs
 }
 
+// Remote returns the remote path
 func (o *Object) Remote() string {
 	return o.remote
 }
 
+// ModTime returns the modification time of the object
 func (o *Object) ModTime(ctx context.Context) time.Time {
 	return o.modTime
 }
 
+// Size of object in bytes
 func (o *Object) Size() int64 {
 	return o.size
 }
 
+// Storable returns if this object is storable
 func (o *Object) Storable() bool {
 	return true
 }
 
+// SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	return fs.ErrorCantSetModTime
 }
 
+// Open an object for read
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
 	var resp *http.Response
 	opts := rest.Opts{
@@ -551,31 +636,33 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		opts.ExtraHeaders[key] = value
 	}
 	// Make sure that the asset is fully available
-	for i := 1; i <= 4; i++ {
+	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed download of \"%s\": %w", o.url, err)
+		if err == nil {
+			cl, clErr := strconv.Atoi(resp.Header.Get("content-length"))
+			if clErr == nil && count == int64(cl) {
+				return false, nil
+			}
 		}
-		if count == 0 {
-			break
-		}
-		cl, err := strconv.Atoi(resp.Header.Get("content-length"))
-		if err == nil && count == int64(cl) {
-			break
-		}
-		time.Sleep(time.Duration(i) * time.Second)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed download of \"%s\": %w", o.url, err)
 	}
+
 	return resp.Body, err
 }
 
+// Update the object with the contents of the io.Reader
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
-	srcImmutable := object.NewStaticObjectInfo(o.Remote(), src.ModTime(ctx), src.Size(), true, nil, o.Fs())
 	options = append(options, &api.UpdateOptions{
 		PublicID:     o.publicID,
 		ResourceType: o.resourceType,
 		DeliveryType: o.deliveryType,
+		DisplayName:  api.CloudinaryEncoder.FromStandardName(o.fs, path.Base(o.Remote())),
+		AssetFolder:  o.fs.FromStandardFullPath(cldPathDir(o.Remote())),
 	})
-	updatedObj, err := o.fs.Put(ctx, in, srcImmutable, options...)
+	updatedObj, err := o.fs.Put(ctx, in, src, options...)
 	if err != nil {
 		return err
 	}
@@ -591,6 +678,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	return nil
 }
 
+// Remove an object
 func (o *Object) Remove(ctx context.Context) error {
 	params := uploader.DestroyParams{
 		PublicID:     o.publicID,
@@ -604,11 +692,11 @@ func (o *Object) Remove(ctx context.Context) error {
 	}
 
 	if res.Error.Message != "" {
-		return fmt.Errorf(res.Error.Message)
+		return errors.New(res.Error.Message)
 	}
 
 	if res.Result != "ok" {
-		return fmt.Errorf(res.Result)
+		return errors.New(res.Result)
 	}
 
 	return nil

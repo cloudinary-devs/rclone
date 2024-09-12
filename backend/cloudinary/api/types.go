@@ -1,12 +1,11 @@
 // Package api has type definitions for cloudinary
-
 package api
 
 import (
 	"fmt"
 )
 
-// Extend the built-in encoder
+// CloudinaryEncoder extends the built-in encoder
 type CloudinaryEncoder interface {
 	// FromStandardPath takes a / separated path in Standard encoding
 	// and converts it to a / separated path in this encoding.
@@ -24,12 +23,16 @@ type CloudinaryEncoder interface {
 	FromStandardFullPath(string) string
 }
 
+// UpdateOptions was created to pass options from Update to Put
 type UpdateOptions struct {
 	PublicID     string
 	ResourceType string
 	DeliveryType string
+	AssetFolder  string
+	DisplayName  string
 }
 
+// Header formats the option as a string
 func (o *UpdateOptions) Header() (string, string) {
 	return "UpdateOption", fmt.Sprintf("%s/%s/%s", o.ResourceType, o.DeliveryType, o.PublicID)
 }
